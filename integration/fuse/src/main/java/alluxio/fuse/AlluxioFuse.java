@@ -11,21 +11,40 @@
 
 package alluxio.fuse;
 
+import alluxio.Constants;
 import alluxio.ProjectConstants;
 import alluxio.RuntimeConstants;
 import alluxio.client.file.FileSystem;
 import alluxio.client.file.FileSystemContext;
+import alluxio.client.file.options.FileSystemOptions;
+import alluxio.client.file.options.UfsFileSystemOptions;
 import alluxio.conf.AlluxioConfiguration;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
-import alluxio.jnifuse.FuseException;
+import alluxio.conf.InstancedConfiguration;
+import alluxio.conf.PropertyKey;
+import alluxio.conf.Source;
+import alluxio.exception.runtime.FailedPreconditionRuntimeException;
+import alluxio.exception.runtime.InvalidArgumentRuntimeException;
+import alluxio.fuse.meta.UpdateChecker;
+import alluxio.fuse.options.FuseOptions;
+import alluxio.heartbeat.FixedIntervalSupplier;
+import alluxio.heartbeat.HeartbeatContext;
+import alluxio.heartbeat.HeartbeatThread;
 import alluxio.jnifuse.LibFuse;
 import alluxio.metrics.MetricKey;
 import alluxio.metrics.MetricsSystem;
+import alluxio.security.user.UserState;
 import alluxio.util.CommonUtils;
 import alluxio.util.JvmPauseMonitor;
 import alluxio.util.network.NetworkAddressUtils;
 
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.DefaultParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import sun.misc.Signal;
@@ -34,8 +53,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
@@ -44,6 +66,74 @@ import javax.annotation.concurrent.ThreadSafe;
 @ThreadSafe
 public final class AlluxioFuse {
   private static final Logger LOG = LoggerFactory.getLogger(AlluxioFuse.class);
+  private static final CommandLineParser PARSER = new DefaultParser();
+
+  private static final String MOUNT_POINT_OPTION_NAME = "m";
+  private static final String MOUNT_ALLUXIO_PATH_OPTION_NAME = "a";
+  private static final String MOUNT_ROOT_UFS_OPTION_NAME = "u";
+  private static final String MOUNT_OPTIONS_OPTION_NAME = "o";
+  private static final String HELP_OPTION_NAME = "h";
+  private static final String UPDATE_CHECK_OPTION_NAME = "c";
+
+  private static final Option MOUNT_POINT_OPTION = Option.builder(MOUNT_POINT_OPTION_NAME)
+      .hasArg()
+      .required(false)
+      .longOpt("mount-point")
+      .desc("The absolute local filesystem path that standalone Fuse will mount Alluxio path to.")
+      .build();
+  private static final Option MOUNT_ALLUXIO_PATH_OPTION
+      = Option.builder(MOUNT_ALLUXIO_PATH_OPTION_NAME)
+      .hasArg()
+      .required(false)
+      .longOpt("alluxio-path")
+      .desc("The Alluxio path to mount to the given Fuse mount point "
+          + "(for example, mount alluxio path `/alluxio` to fuse mount point `/mnt/alluxio-fuse`; "
+          + "local operations like `mkdir /mnt/alluxio-fuse/folder` will be translated to "
+          + "`alluxio fs mkdir /alluxio/folder`)")
+      .build();
+  private static final Option MOUNT_ROOT_UFS_OPTION
+      = Option.builder(MOUNT_ROOT_UFS_OPTION_NAME)
+      .hasArg()
+      .required(false)
+      .longOpt("root-ufs")
+      .desc("The storage address of the UFS to mount to the given Fuse mount point. "
+          + "All operations against the FUSE mount point "
+          + "will be redirected to this storage address. "
+          + "(for example, mount storage address `s3://my_bucket/my_folder` "
+          + "to local FUSE mount point `/mnt/alluxio-fuse`; "
+          + "local operations like `mkdir /mnt/alluxio-fuse/folder` will be translated to "
+          + "`mkdir s3://my_bucket/my_folder/folder`)")
+      .build();
+  private static final Option MOUNT_OPTIONS = Option.builder(MOUNT_OPTIONS_OPTION_NAME)
+      .valueSeparator(',')
+      .required(false)
+      .hasArgs()
+      .desc("Providing mount options separating by comma. "
+          + "Mount options includes operating system mount options, "
+          + "many FUSE specific mount options (e.g. direct_io,attr_timeout=10s.allow_other), "
+          + "Alluxio property key=value pairs, and Alluxio FUSE special mount options "
+          + "data_cache=<local_cache_directory>,data_cache_size=<size>,"
+          + "metadata_cache_size=<size>,metadata_cache_expire=<timeout>")
+      .build();
+  private static final Option UPDATE_CHECK_OPTION = Option.builder(UPDATE_CHECK_OPTION_NAME)
+      .required(false)
+      .longOpt("update-check")
+      .hasArg()
+      .desc("Enables or disables the FUSE version update check. "
+          + "Disabled by default when connecting to Alluxio system cache. "
+          + "Enabled by default when connecting an under storage directly.")
+      .build();
+  private static final Option HELP_OPTION = Option.builder(HELP_OPTION_NAME)
+      .required(false)
+      .desc("Print this help message")
+      .build();
+  private static final Options OPTIONS = new Options()
+      .addOption(MOUNT_POINT_OPTION)
+      .addOption(MOUNT_ALLUXIO_PATH_OPTION)
+      .addOption(MOUNT_ROOT_UFS_OPTION)
+      .addOption(MOUNT_OPTIONS)
+      .addOption(UPDATE_CHECK_OPTION)
+      .addOption(HELP_OPTION);
 
   // prevent instantiation
   private AlluxioFuse() {}
@@ -55,23 +145,24 @@ public final class AlluxioFuse {
    *
    * @param args arguments to run the command line
    */
-  public static void main(String[] args) {
-    LOG.info("Alluxio version: {}-{}", RuntimeConstants.VERSION, ProjectConstants.REVISION);
-    AlluxioConfiguration conf = Configuration.global();
+  public static void main(String[] args) throws ParseException {
+    CommandLine cli = PARSER.parse(OPTIONS, args);
 
-    // Parsing options needs to know which version is being used.
-    LibFuse.loadLibrary(AlluxioFuseUtils.getVersionPreference(conf));
+    if (cli.hasOption(HELP_OPTION_NAME)) {
+      final HelpFormatter fmt = new HelpFormatter();
+      fmt.printHelp(AlluxioFuse.class.getName(), OPTIONS);
+      return;
+    }
+
+    LOG.info("Alluxio version: {}-{}", RuntimeConstants.VERSION, ProjectConstants.REVISION);
+    setConfigurationFromInput(cli, Configuration.modifiableGlobal());
+    AlluxioConfiguration conf = Configuration.global();
+    FuseOptions fuseOptions = getFuseOptions(cli, conf);
 
     FileSystemContext fsContext = FileSystemContext.create(conf);
-    conf = AlluxioFuseUtils.tryLoadingConfigFromMaster(fsContext);
-
-    final Optional<AlluxioFuseCliOpts> cliOpts = AlluxioFuseCliOpts.AlluxioFuseCliParser
-        .parseAndCreateAlluxioFuseCliOpts(args);
-    if (!cliOpts.isPresent()) {
-      System.exit(1);
+    if (!fuseOptions.getFileSystemOptions().getUfsFileSystemOptions().isPresent()) {
+      conf = AlluxioFuseUtils.tryLoadingConfigFromMaster(fsContext);
     }
-    final AlluxioFuseFileSystemOpts fuseFsOpts =
-        AlluxioFuseFileSystemOpts.create(conf, cliOpts.get());
 
     CommonUtils.PROCESS_TYPE.set(CommonUtils.ProcessType.CLIENT);
     MetricsSystem.startSinks(conf.getString(PropertyKey.METRICS_CONF_FILE));
@@ -84,11 +175,21 @@ public final class AlluxioFuse {
       webServer.start();
     }
     startJvmMonitorProcess();
-    try (FileSystem fs = FileSystem.Factory.create(fsContext)) {
-      FuseUmountable fuseUmountable = launchFuse(fsContext, fs, conf,
-          fuseFsOpts, true);
-    } catch (IOException e) {
-      LOG.error("Failed to launch FUSE", e);
+    ExecutorService executor = null;
+    if (fuseOptions.updateCheckEnabled()) {
+      executor = Executors.newSingleThreadExecutor();
+      executor.submit(new HeartbeatThread(HeartbeatContext.FUSE_UPDATE_CHECK,
+          UpdateChecker.create(fuseOptions), () -> new FixedIntervalSupplier(Constants.DAY_MS),
+          Configuration.global(), UserState.Factory.create(conf)));
+    }
+    try (FileSystem fs = FileSystem.Factory.create(fsContext, fuseOptions.getFileSystemOptions())) {
+      launchFuse(fsContext, fs, fuseOptions, true);
+    } catch (Throwable t) {
+      if (executor != null) {
+        executor.shutdown();
+      }
+      // TODO(lu) FUSE unmount gracefully
+      LOG.error("Failed to launch FUSE", t);
       System.exit(-1);
     }
   }
@@ -98,79 +199,162 @@ public final class AlluxioFuse {
    *
    * @param fsContext file system context for Fuse client to communicate to servers
    * @param fs file system for Fuse client to communicate to servers
-   * @param conf the alluxio configuration to create Fuse file system
-   * @param fuseFsOpts the fuse filesystem options
+   * @param fuseOptions Fuse options
    * @param blocking whether the Fuse application is blocking or not
    * @return the Fuse application handler for future Fuse umount operation
    */
   public static FuseUmountable launchFuse(FileSystemContext fsContext, FileSystem fs,
-      AlluxioConfiguration conf, AlluxioFuseFileSystemOpts fuseFsOpts, boolean blocking)
-      throws IOException {
+       FuseOptions fuseOptions, boolean blocking) {
+    AlluxioConfiguration conf = fsContext.getClusterConf();
+    validateFuseConfAndOptions(conf, fuseOptions);
 
-    LibFuse.loadLibrary(AlluxioFuseUtils.getVersionPreference(conf));
+    LibFuse.loadLibrary(AlluxioFuseUtils.getLibfuseVersion(conf));
 
-    try {
-      String mountPoint = fuseFsOpts.getMountPoint();
-      Path mountPath = Paths.get(mountPoint);
-      if (Files.isRegularFile(mountPath)) {
-        LOG.error("Mount point {} is not a directory but a file", mountPoint);
-        throw new IOException("Failed to launch fuse, mount point is a file");
-      }
-      if (!Files.exists(mountPath)) {
-        LOG.warn("Mount point on local filesystem does not exist, creating {}", mountPoint);
+    String mountPoint = conf.getString(PropertyKey.FUSE_MOUNT_POINT);
+    Path mountPath = Paths.get(mountPoint);
+    if (!Files.exists(mountPath)) {
+      LOG.warn("Mount point on local filesystem does not exist, creating {}", mountPoint);
+      try {
         Files.createDirectories(mountPath);
+      } catch (IOException e) {
+        throw new FailedPreconditionRuntimeException("Failed to create mount point");
       }
+    }
 
-      final List<String> fuseOpts = fuseFsOpts.getFuseOptions();
-      if (conf.getBoolean(PropertyKey.FUSE_JNIFUSE_ENABLED)) {
-        final AlluxioJniFuseFileSystem fuseFs
-            = new AlluxioJniFuseFileSystem(fsContext, fs, fuseFsOpts);
+    final boolean debugEnabled = conf.getBoolean(PropertyKey.FUSE_DEBUG_ENABLED);
+    if (conf.getBoolean(PropertyKey.FUSE_JNIFUSE_ENABLED)) {
+      final AlluxioJniFuseFileSystem fuseFs
+          = new AlluxioJniFuseFileSystem(fsContext, fs, fuseOptions);
 
-        FuseSignalHandler fuseSignalHandler = new FuseSignalHandler(fuseFs);
-        Signal.handle(new Signal("TERM"), fuseSignalHandler);
+      FuseSignalHandler fuseSignalHandler = new FuseSignalHandler(fuseFs);
+      Signal.handle(new Signal("TERM"), fuseSignalHandler);
 
-        try {
-          String[] fuseOptsArray = fuseOpts.toArray(new String[0]);
-          LOG.info("Mounting AlluxioJniFuseFileSystem: mount point=\"{}\", OPTIONS=\"{}\"",
-              fuseFsOpts.getMountPoint(), fuseOptsArray);
-          fuseFs.mount(blocking, fuseFsOpts.isDebug(), fuseOptsArray);
-          return fuseFs;
-        } catch (FuseException e) {
-          // only try to umount file system when exception occurred.
-          // jni-fuse registers JVM shutdown hook to ensure fs.umount()
-          // will be executed when this process is exiting.
-          String errorMessage = String.format("Failed to mount alluxio path %s to mount point %s",
-              fuseFsOpts.getAlluxioPath(), fuseFsOpts.getMountPoint());
-          LOG.error(errorMessage, e);
-          try {
-            fuseFs.umount(true);
-          } catch (FuseException fe) {
-            LOG.error("Failed to unmount Fuse", fe);
+      try {
+        LOG.info("Mounting AlluxioJniFuseFileSystem: mount point=\"{}\", OPTIONS=\"{}\"",
+            mountPoint, String.join(",", fuseOptions.getFuseMountOptions()));
+        fuseFs.mount(blocking, debugEnabled, fuseOptions.getFuseMountOptions());
+        return fuseFs;
+      } catch (RuntimeException e) {
+        fuseFs.umount(true);
+        throw e;
+      }
+    } else {
+      final AlluxioJnrFuseFileSystem fuseFs = new AlluxioJnrFuseFileSystem(fs, conf, fuseOptions);
+      try {
+        fuseFs.mount(mountPath, blocking, debugEnabled, fuseOptions.getFuseMountOptions()
+            .stream().map(a -> "-o" + a).toArray(String[]::new));
+        return fuseFs;
+      } catch (Throwable t) {
+        // only try to umount file system when exception occurred.
+        // jnr-fuse registers JVM shutdown hook to ensure fs.umount()
+        // will be executed when this process is exiting.
+        fuseFs.umount();
+        throw t;
+      }
+    }
+  }
+
+  /**
+   * Updates Alluxio configuration according to command line input.
+   *
+   * @param cli the command line inputs
+   * @param conf the modifiable configuration to update
+   */
+  private static void setConfigurationFromInput(CommandLine cli, InstancedConfiguration conf) {
+    if (cli.hasOption(MOUNT_POINT_OPTION_NAME)) {
+      conf.set(PropertyKey.FUSE_MOUNT_POINT,
+          cli.getOptionValue(MOUNT_POINT_OPTION_NAME), Source.RUNTIME);
+    }
+    if (cli.hasOption(MOUNT_ALLUXIO_PATH_OPTION_NAME)) {
+      conf.set(PropertyKey.FUSE_MOUNT_ALLUXIO_PATH,
+          cli.getOptionValue(MOUNT_ALLUXIO_PATH_OPTION_NAME), Source.RUNTIME);
+    }
+    if (cli.hasOption(MOUNT_ROOT_UFS_OPTION_NAME)) {
+      // Disable connections between FUSE and server
+      conf.set(PropertyKey.USER_METRICS_COLLECTION_ENABLED, false, Source.RUNTIME);
+      conf.set(PropertyKey.USER_UPDATE_FILE_ACCESSTIME_DISABLED, true, Source.RUNTIME);
+    }
+    if (cli.hasOption(MOUNT_OPTIONS_OPTION_NAME)) {
+      List<String> fuseOptions = new ArrayList<>();
+      String[] mountOptionsArray = cli.getOptionValues(MOUNT_OPTIONS_OPTION_NAME);
+      for (String opt : mountOptionsArray) {
+        String trimedOpt = opt.trim();
+        if (trimedOpt.isEmpty()) {
+          continue;
+        }
+        String[] optArray = trimedOpt.split("=");
+        if (optArray.length == 1) {
+          fuseOptions.add(trimedOpt);
+          continue;
+        }
+        String key = optArray[0];
+        String value = optArray[1];
+        if (PropertyKey.isValid(key)) {
+          PropertyKey propertyKey = PropertyKey.fromString(key);
+          conf.set(propertyKey, propertyKey.parseValue(value), Source.RUNTIME);
+          LOG.info("Set Alluxio property key({}={}) from command line input", key, value);
+        } else if (key.equals("data_cache")) {
+          conf.set(PropertyKey.USER_CLIENT_CACHE_ENABLED, true, Source.RUNTIME);
+          conf.set(PropertyKey.USER_CLIENT_CACHE_DIRS,
+              PropertyKey.USER_CLIENT_CACHE_DIRS.parseValue(value), Source.RUNTIME);
+          LOG.info("Set data cache to {} from command line input", value);
+        } else if (key.equals("data_cache_size")) {
+          conf.set(PropertyKey.USER_CLIENT_CACHE_SIZE,
+              PropertyKey.USER_CLIENT_CACHE_SIZE.parseValue(value), Source.RUNTIME);
+          LOG.info("Set data cache size as {} from command line input", value);
+        } else if (key.equals("metadata_cache_size")) {
+          if (value.equals("0")) {
+            continue;
           }
-          throw new IOException(errorMessage, e);
-        }
-      } else {
-        // Force direct_io in JNR-FUSE: writes and reads bypass the kernel page
-        // cache and go directly to alluxio. This avoids extra memory copies
-        // in the write path.
-        // TODO(binfan): support kernel_cache (issues#10840)
-        fuseOpts.add("-odirect_io");
-        final AlluxioJnrFuseFileSystem fuseFs = new AlluxioJnrFuseFileSystem(fs, fuseFsOpts);
-        try {
-          fuseFs.mount(Paths.get(fuseFsOpts.getMountPoint()), blocking, fuseFsOpts.isDebug(),
-              fuseOpts.toArray(new String[0]));
-          return fuseFs;
-        } catch (ru.serce.jnrfuse.FuseException e) {
-          // only try to umount file system when exception occurred.
-          // jnr-fuse registers JVM shutdown hook to ensure fs.umount()
-          // will be executed when this process is exiting.
-          fuseFs.umount();
-          throw new IOException(String.format("Failed to mount alluxio path %s to mount point %s",
-              fuseFsOpts.getAlluxioPath(), fuseFsOpts.getMountPoint()), e);
+          conf.set(PropertyKey.USER_METADATA_CACHE_ENABLED, true, Source.RUNTIME);
+          conf.set(PropertyKey.USER_METADATA_CACHE_MAX_SIZE,
+              PropertyKey.USER_METADATA_CACHE_MAX_SIZE.parseValue(value), Source.RUNTIME);
+          LOG.info("Set metadata cache size as {} from command line input", value);
+        } else if (key.equals("metadata_cache_expire")) {
+          conf.set(PropertyKey.USER_METADATA_CACHE_EXPIRATION_TIME,
+              PropertyKey.USER_METADATA_CACHE_EXPIRATION_TIME.parseValue(value), Source.RUNTIME);
+          LOG.info("Set metadata cache expiration time as {} from command line input", value);
+        } else {
+          fuseOptions.add(trimedOpt);
         }
       }
-    } catch (Throwable e) {
-      throw new IOException("Failed to mount Alluxio file system", e);
+      if (!fuseOptions.isEmpty()) {
+        conf.set(PropertyKey.FUSE_MOUNT_OPTIONS, fuseOptions, Source.RUNTIME);
+        LOG.info("Set fuse mount point options as {} from command line input",
+            String.join(",", fuseOptions));
+      }
+    }
+  }
+
+  private static FuseOptions getFuseOptions(CommandLine cli, AlluxioConfiguration conf) {
+    boolean updateCheckEnabled = false;
+    if (cli.hasOption(UPDATE_CHECK_OPTION_NAME)) {
+      updateCheckEnabled = Boolean.parseBoolean(cli.getOptionValue(UPDATE_CHECK_OPTION_NAME));
+    } else if (cli.hasOption(MOUNT_ROOT_UFS_OPTION_NAME)) {
+      updateCheckEnabled = true;
+    }
+    return cli.hasOption(MOUNT_ROOT_UFS_OPTION_NAME)
+        ? FuseOptions.create(conf, FileSystemOptions.create(conf,
+        Optional.of(new UfsFileSystemOptions(cli.getOptionValue(MOUNT_ROOT_UFS_OPTION_NAME)))),
+        updateCheckEnabled) : FuseOptions.create(conf, updateCheckEnabled);
+  }
+
+  private static void validateFuseConfAndOptions(AlluxioConfiguration conf, FuseOptions options) {
+    String mountPoint = conf.getString(PropertyKey.FUSE_MOUNT_POINT);
+    if (mountPoint.isEmpty()) {
+      throw new InvalidArgumentRuntimeException(
+          String.format("%s should be set and should not be empty",
+              PropertyKey.FUSE_MOUNT_POINT.getName()));
+    }
+    if (!options.getFileSystemOptions().getUfsFileSystemOptions().isPresent()
+        && conf.getString(PropertyKey.FUSE_MOUNT_ALLUXIO_PATH).isEmpty()) {
+      throw new InvalidArgumentRuntimeException(
+          String.format("%s should be set and should not be empty",
+              PropertyKey.FUSE_MOUNT_ALLUXIO_PATH.getName()));
+    }
+    if (Files.isRegularFile(Paths.get(mountPoint))) {
+      LOG.error("Mount point {} is not a directory but a file", mountPoint);
+      throw new InvalidArgumentRuntimeException("Failed to launch fuse, mount point is a file");
     }
   }
 

@@ -173,12 +173,14 @@ public class CmdRunAttempt {
       return Status.FAILED;
     }
 
-    // This make an assumption that this job tree only goes 1 level deep
     boolean finished = true;
-    for (JobInfo child : jobInfo.getChildren()) {
-      if (!child.getStatus().isFinished()) {
-        finished = false;
-        break;
+    if (!jobInfo.getStatus().isFinished()) {
+      // This make an assumption that this job tree only goes 1 level deep
+      for (JobInfo child : jobInfo.getChildren()) {
+        if (!child.getStatus().isFinished()) {
+          finished = false;
+          break;
+        }
       }
     }
 
@@ -188,7 +190,11 @@ public class CmdRunAttempt {
         Set<JobInfo> failed = jobInfo.getChildren().stream()
                 .filter(child -> child.getStatus() == Status.FAILED).collect(Collectors.toSet());
         for (JobInfo task : failed) {
-          mFailedFiles.add(StringUtils.substringBetween(task.getDescription(), prefix, ","));
+          String filePath = StringUtils.substringBetween(task.getDescription(), prefix, ",");
+          if (filePath == null) {
+            filePath = String.format("unknown filePath for task: %s", task.getId());
+          }
+          mFailedFiles.add(filePath);
         }
       }
       return jobInfo.getStatus();

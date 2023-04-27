@@ -27,6 +27,12 @@ import javax.annotation.concurrent.ThreadSafe;
 public enum ExceptionMessage {
   // general
   PATH_DOES_NOT_EXIST("Path \"{0}\" does not exist."),
+  BUCKET_DOES_NOT_EXIST("Bucket \"{0}\" does not exist."),
+  PATH_DOES_NOT_EXIST_PARTIAL_LISTING("Path \"{0}\" was removed during listing."),
+  INODE_NOT_FOUND_PARTIAL_LISTING("\"{0}\" Inode was not found during partial listing. It was "
+      + "likely removed across listing calls."),
+  INODE_NOT_IN_PARTIAL_LISTING("Inode not found in root path \"{0}\" during partial listing. "
+      + "It was likely moved across listing calls."),
   PATH_MUST_BE_FILE("Path \"{0}\" must be a file."),
   PATH_INVALID("Path \"{0}\" is invalid."),
   STATE_LOCK_TIMED_OUT("Failed to acquire the lock after {0}ms"),
@@ -81,11 +87,18 @@ public enum ExceptionMessage {
   CANNOT_FREE_PINNED_FILE("Cannot free file {0} which is pinned. Please unpin it first or"
       + " set the \"forced\" flag of free operation to true"),
   INODE_DOES_NOT_EXIST("inodeId {0,number,#} does not exist"),
+  START_AFTER_DOES_NOT_MATCH_PATH(
+      "The start after partial listing option {0} is not a prefix of the listing path {1}"),
+  PREFIX_DOES_NOT_MATCH_PATH(
+      "Prefix component {0} does not match path component {1} of the listing offset"),
   PATH_MUST_HAVE_VALID_PARENT("{0} does not have a valid parent"),
   RENAME_CANNOT_BE_TO_ROOT("Cannot rename a path to the root directory"),
   ROOT_CANNOT_BE_RENAMED("The root directory cannot be renamed"),
   JOURNAL_ENTRY_MISSING(
       "Journal entries are missing between sequence number {0} (inclusive) and {1} (exclusive)."),
+  CANNOT_OVERWRITE_DIRECTORY("{0} already exists. Directories cannot be overwritten with create"),
+  CANNOT_OVERWRITE_FILE_WITHOUT_OVERWRITE("{0} already exists. If you want to overwrite the file,"
+      + " you need to specify the overwrite option."),
 
   // block master
   NO_WORKER_FOUND("No worker with workerId {0,number,#} is found"),
@@ -178,6 +191,16 @@ public enum ExceptionMessage {
 
   // ufs maintenance
   UFS_OP_NOT_ALLOWED("Operation {0} not allowed on ufs path {1} under maintenance mode {2}"),
+
+  // RocksDB
+  ROCKS_DB_CLOSING("RocksDB is being closed because the master is under one of the following "
+      + "events: primary failover/shut down/checkpoint/journal replay"),
+  ROCKS_DB_REWRITTEN("RocksDB has been rewritten. Typically this is because the master is "
+      + "restored to a checkpoint."),
+  ROCKS_DB_EXCLUSIVE_LOCK_FORCED("RocksDB exclusive lock is forced with {0} ongoing "
+      + "r/w operations. There is a risk to crash!"),
+  ROCKS_DB_REF_COUNT_DIRTY("Some read/write operations did not respect the exclusive lock on "
+      + "the RocksStore and messed up the ref count! Current ref count is {0}."),
 
   // SEMICOLON! minimize merge conflicts by putting it on its own line
   ;

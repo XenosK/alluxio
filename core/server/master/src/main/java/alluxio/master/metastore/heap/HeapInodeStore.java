@@ -11,9 +11,9 @@
 
 package alluxio.master.metastore.heap;
 
-import alluxio.collections.TwoKeyConcurrentMap;
-import alluxio.conf.PropertyKey;
+import alluxio.collections.TwoKeyConcurrentSortedMap;
 import alluxio.conf.Configuration;
+import alluxio.conf.PropertyKey;
 import alluxio.master.file.meta.EdgeEntry;
 import alluxio.master.file.meta.Inode;
 import alluxio.master.file.meta.InodeDirectoryView;
@@ -34,17 +34,22 @@ import alluxio.util.ObjectSizeCalculator;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.SortedMap;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.stream.StreamSupport;
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -53,10 +58,11 @@ import javax.annotation.concurrent.ThreadSafe;
  */
 @ThreadSafe
 public class HeapInodeStore implements InodeStore {
+  private static final Logger LOG = LoggerFactory.getLogger(HeapInodeStore.class);
   private final Map<Long, MutableInode<?>> mInodes = new ConcurrentHashMap<>();
   // Map from inode id to ids of children of that inode. The inner maps are ordered by child name.
-  private final TwoKeyConcurrentMap<Long, String, Long, Map<String, Long>> mEdges =
-      new TwoKeyConcurrentMap<>(() -> new ConcurrentHashMap<>(4));
+  private final TwoKeyConcurrentSortedMap<Long, String, Long, SortedMap<String, Long>> mEdges =
+      new TwoKeyConcurrentSortedMap<>(ConcurrentSkipListMap::new);
 
   /**
    * Construct a heap inode store.
@@ -73,6 +79,25 @@ public class HeapInodeStore implements InodeStore {
   @Override
   public void remove(Long inodeId) {
     mInodes.remove(inodeId);
+  }
+
+  @Override
+  public void writeNewInode(MutableInode<?> inode) {
+    mInodes.compute(inode.getId(), (k, existingInode) -> {
+      if (existingInode != null && !existingInode.getName().equals(inode.getName())) {
+        LOG.error(
+            "[InodeTreeCorruption] trying writing the inode name {} id {}, parent id {}, "
+                + "but a different inode name {} id {} parent id {} already exists. "
+                + "Your journal files are probably corrupted!",
+            inode.getName(), inode.getId(), inode.getParentId(),
+            existingInode.getName(), existingInode.getId(), existingInode.getParentId());
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("[InodeTreeCorruption] Existing inode: {}, new written inode: {}",
+              getInodePathString(existingInode), getInodePathString(inode));
+        }
+      }
+      return existingInode == null ? inode : existingInode;
+    });
   }
 
   @Override
@@ -103,7 +128,7 @@ public class HeapInodeStore implements InodeStore {
         .map(this::get)
         .filter(Optional::isPresent)
         .map(Optional::get)
-        .map(Inode::wrap).iterator(), (any) -> childIter.closeResource());
+        .map(Inode::wrap).iterator(), (any) -> childIter.close());
   }
 
   @Override
@@ -139,8 +164,8 @@ public class HeapInodeStore implements InodeStore {
     mEdges.clear();
   }
 
-  private Map<String, Long> children(long id) {
-    return mEdges.getOrDefault(id, Collections.emptyMap());
+  private SortedMap<String, Long> children(long id) {
+    return mEdges.getOrDefault(id, Collections.emptySortedMap());
   }
 
   @Override
@@ -173,6 +198,70 @@ public class HeapInodeStore implements InodeStore {
 
   @Override
   public CloseableIterator<Long> getChildIds(Long inodeId, ReadOption option) {
-    return CloseableIterator.noopCloseable(children(inodeId).values().iterator());
+    return CloseableIterator.noopCloseable(sortedMapToIterator(children(inodeId), option));
+  }
+
+  /**
+   * Helper function that returns an iterator over the sorted map using the given
+   * read options.
+   * @param childrenMap the map to create the iterator from
+   * @param option the read options to use
+   * @return the iterator over the map
+   */
+  public static Iterator<Long> sortedMapToIterator(
+      SortedMap<String, Long> childrenMap, ReadOption option) {
+
+    if (option.getStartFrom() != null && option.getPrefix() != null) {
+      // if the prefix is after readFrom, then we just start the map from
+      // the prefix
+      if (option.getPrefix().compareTo(option.getStartFrom()) > 0) {
+        childrenMap = childrenMap.tailMap(option.getPrefix());
+      } else {
+        childrenMap = childrenMap.tailMap(option.getStartFrom());
+      }
+    } else if (option.getStartFrom() != null) {
+      childrenMap = childrenMap.tailMap(option.getStartFrom());
+    } else if (option.getPrefix() != null) {
+      childrenMap = childrenMap.tailMap(option.getPrefix());
+    }
+
+    if (option.getPrefix() == null) {
+      return childrenMap.values().iterator();
+    } else {
+      // make an iterator that stops once the prefix has been passed
+      class PrefixIter implements Iterator<Long> {
+        final Iterator<Map.Entry<String, Long>> mIter;
+        Map.Entry<String, Long> mNxt;
+
+        PrefixIter(Iterator<Map.Entry<String, Long>> iter) {
+          mIter = iter;
+          checkNext();
+        }
+
+        @Override
+        public boolean hasNext() {
+          return (mNxt != null);
+        }
+
+        @Override
+        public Long next() {
+          Long val = mNxt.getValue();
+          checkNext();
+          return val;
+        }
+
+        private void checkNext() {
+          mNxt = null;
+          if (mIter.hasNext()) {
+            mNxt = mIter.next();
+            if (!mNxt.getKey().startsWith(option.getPrefix())) {
+              mNxt = null;
+            }
+          }
+        }
+      }
+
+      return new PrefixIter(childrenMap.entrySet().iterator());
+    }
   }
 }

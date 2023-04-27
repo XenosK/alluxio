@@ -12,21 +12,19 @@
 package alluxio.master;
 
 import alluxio.AlluxioTestDirectory;
-import alluxio.AlluxioURI;
 import alluxio.ConfigurationTestUtils;
 import alluxio.Constants;
 import alluxio.client.file.FileSystem;
 import alluxio.client.file.FileSystemContext;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
-import alluxio.exception.AlluxioException;
-import alluxio.exception.status.AlluxioStatusException;
+import alluxio.conf.PropertyKey;
 import alluxio.master.journal.JournalType;
 import alluxio.underfs.UnderFileSystem;
 import alluxio.underfs.options.DeleteOptions;
 import alluxio.util.CommonUtils;
 import alluxio.util.WaitForOptions;
 import alluxio.util.io.PathUtils;
+import alluxio.worker.WorkerProcess;
 
 import com.google.common.base.Throwables;
 import org.apache.curator.test.TestingServer;
@@ -47,7 +45,6 @@ import javax.annotation.concurrent.NotThreadSafe;
 @NotThreadSafe
 public final class MultiMasterLocalAlluxioCluster extends AbstractLocalAlluxioCluster {
   private static final Logger LOG = LoggerFactory.getLogger(MultiMasterLocalAlluxioCluster.class);
-  private static final int WAIT_MASTER_START_TIMEOUT_MS = 20000;
 
   private TestingServer mCuratorServer = null;
   private int mNumOfMasters = 0;
@@ -128,6 +125,14 @@ public final class MultiMasterLocalAlluxioCluster extends AbstractLocalAlluxioCl
   }
 
   /**
+   * @param index the worker index
+   * @return the worker process
+   */
+  public WorkerProcess getWorkerProcess(int index) {
+    return mWorkers.get(index);
+  }
+
+  /**
    * @return index of leader master in {@link #mMasters}, or -1 if there is no leader temporarily
    */
   public int getLeaderIndex() {
@@ -202,20 +207,6 @@ public final class MultiMasterLocalAlluxioCluster extends AbstractLocalAlluxioCl
   public void waitForNewMaster(int timeoutMs) throws TimeoutException, InterruptedException {
     CommonUtils.waitFor("the new leader master to start", () -> getLeaderIndex() != -1,
         WaitForOptions.defaults().setTimeoutMs(timeoutMs));
-  }
-
-  private void waitForMasterServing() throws TimeoutException, InterruptedException {
-    CommonUtils.waitFor("master starts serving RPCs", () -> {
-      try {
-        getClient().getStatus(new AlluxioURI("/"));
-        return true;
-      } catch (AlluxioException | AlluxioStatusException e) {
-        LOG.error("Failed to get status of /:", e);
-        return false;
-      } catch (Exception e) {
-        throw new RuntimeException(e);
-      }
-    }, WaitForOptions.defaults().setTimeoutMs(WAIT_MASTER_START_TIMEOUT_MS));
   }
 
   /**

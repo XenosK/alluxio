@@ -25,7 +25,9 @@ import alluxio.grpc.DeletePOptions;
 import alluxio.grpc.ExistsPOptions;
 import alluxio.grpc.FreePOptions;
 import alluxio.grpc.GetStatusPOptions;
+import alluxio.grpc.JobProgressReportFormat;
 import alluxio.grpc.ListStatusPOptions;
+import alluxio.grpc.ListStatusPartialPOptions;
 import alluxio.grpc.MountPOptions;
 import alluxio.grpc.RenamePOptions;
 import alluxio.grpc.ScheduleAsyncPersistencePOptions;
@@ -33,6 +35,8 @@ import alluxio.grpc.SetAclAction;
 import alluxio.grpc.SetAclPOptions;
 import alluxio.grpc.SetAttributePOptions;
 import alluxio.grpc.UpdateUfsModePOptions;
+import alluxio.job.JobDescription;
+import alluxio.job.JobRequest;
 import alluxio.master.MasterClientContext;
 import alluxio.security.authorization.AclEntry;
 import alluxio.wire.MountPointInfo;
@@ -40,6 +44,7 @@ import alluxio.wire.SyncPointInfo;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Consumer;
 
 /**
@@ -191,6 +196,16 @@ public interface FileSystemMasterClient extends Client {
       throws AlluxioStatusException;
 
   /**
+   * @param path the path to list
+   * @param options the listStatus partial options
+   * @return the list of file information for the given path
+   * @throws NotFoundException if the path does not exist
+   */
+  ListStatusPartialResult listStatusPartial(
+      AlluxioURI path, ListStatusPartialPOptions options)
+      throws AlluxioStatusException;
+
+  /**
    * Mounts the given UFS path under the given Alluxio path.
    *
    * @param alluxioPath the Alluxio path
@@ -210,10 +225,22 @@ public interface FileSystemMasterClient extends Client {
 
   /**
    * Lists all mount points and their corresponding under storage addresses.
+   * This is the same as calling {@link #getMountTable(boolean)} with true argument.
    *
    * @return a map from String to {@link MountPointInfo}
    */
-  Map<String, MountPointInfo> getMountTable() throws AlluxioStatusException;
+  default Map<String, MountPointInfo> getMountTable() throws AlluxioStatusException {
+    return getMountTable(true);
+  }
+
+  /**
+   * Lists all mount points and their corresponding under storage addresses.
+   *
+   * @param checkUfs whether to get UFS usage info
+   *
+   * @return a map from String to {@link MountPointInfo}
+   */
+  Map<String, MountPointInfo> getMountTable(boolean checkUfs) throws AlluxioStatusException;
 
   /**
    * Renames a file or a directory.
@@ -312,4 +339,38 @@ public interface FileSystemMasterClient extends Client {
    * @return the state lock waiters and holders thread identifiers
    */
   List<String> getStateLockHolders() throws AlluxioStatusException;
+
+  /**
+   * Mark a path as needed synchronization with the UFS, when this path or any
+   * of its children are accessed, a sync with the UFS will be performed.
+   * @param path the path to invalidate
+   */
+  void needsSync(AlluxioURI path) throws AlluxioStatusException;
+
+  /**
+   * Submit a job to scheduler.
+   *
+   * @param job the job request to submit
+   * @return jobId if job is submitted, empty if a job already exists
+   */
+  Optional<String> submitJob(JobRequest job);
+
+  /**
+   * Stop a job.
+   *
+   * @param jobDescription job description be stopped
+   * @return true if job is stopped, false if we cannot find job
+   */
+  boolean stopJob(JobDescription jobDescription);
+
+  /**
+   * Get progress of a job.
+   *
+   * @param jobDescription   job description to get progress
+   * @param format  progress report format
+   * @param verbose whether to return verbose report
+   * @return the job progress
+   */
+  String getJobProgress(JobDescription jobDescription,
+      JobProgressReportFormat format, boolean verbose);
 }

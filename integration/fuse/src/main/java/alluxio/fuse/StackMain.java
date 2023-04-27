@@ -20,6 +20,8 @@ import alluxio.util.CommonUtils;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Main entry for StackFS.
@@ -37,10 +39,12 @@ public class StackMain {
     Path root = Paths.get(args[1]);
     Path mountPoint = Paths.get(args[0]);
     AlluxioConfiguration conf = Configuration.global();
-    LibFuse.loadLibrary(AlluxioFuseUtils.getVersionPreference(conf));
+    LibFuse.loadLibrary(AlluxioFuseUtils.getLibfuseVersion(conf));
     StackFS fs = new StackFS(root, mountPoint);
-    String[] fuseOpts = new String[args.length - 2];
-    System.arraycopy(args, 2, fuseOpts, 0, args.length - 2);
+    Set<String> fuseOpts = new HashSet<>();
+    for (int i = 2; i < args.length; i++) {
+      fuseOpts.add(args[i].substring(2)); // remove -o
+    }
     try {
       CommonUtils.PROCESS_TYPE.set(CommonUtils.ProcessType.CLIENT);
       MetricsSystem.startSinks(conf.getString(PropertyKey.METRICS_CONF_FILE));

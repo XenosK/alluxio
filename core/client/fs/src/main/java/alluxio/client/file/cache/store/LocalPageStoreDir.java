@@ -17,6 +17,7 @@ import alluxio.client.file.cache.PageId;
 import alluxio.client.file.cache.PageInfo;
 import alluxio.client.file.cache.PageStore;
 import alluxio.client.file.cache.evictor.CacheEvictor;
+import alluxio.client.quota.CacheScope;
 
 import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
@@ -25,10 +26,11 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import javax.annotation.Nullable;
 
 /**
  *
@@ -36,7 +38,7 @@ import javax.annotation.Nullable;
 public class LocalPageStoreDir extends QuotaManagedPageStoreDir {
   private static final Logger LOG = LoggerFactory.getLogger(LocalPageStoreDir.class);
 
-  private final LocalPageStoreOptions mPageStoreOptions;
+  private final PageStoreOptions mPageStoreOptions;
   private final int mFileBuckets;
   private final Pattern mPagePattern;
 
@@ -48,7 +50,7 @@ public class LocalPageStoreDir extends QuotaManagedPageStoreDir {
    * @param pageStore
    * @param evictor
    */
-  public LocalPageStoreDir(LocalPageStoreOptions pageStoreOptions,
+  public LocalPageStoreDir(PageStoreOptions pageStoreOptions,
                            PageStore pageStore,
                            CacheEvictor evictor) {
     super(pageStoreOptions.getRootDir(),
@@ -91,7 +93,7 @@ public class LocalPageStoreDir extends QuotaManagedPageStoreDir {
    * @throws IOException if any error occurs
    */
   @Override
-  public void scanPages(Consumer<PageInfo> pageInfoConsumer) throws IOException {
+  public void scanPages(Consumer<Optional<PageInfo>> pageInfoConsumer) throws IOException {
     Files.walk(getRootPath()).filter(Files::isRegularFile).map(this::getPageInfo)
         .forEach(pageInfoConsumer);
   }
@@ -100,44 +102,48 @@ public class LocalPageStoreDir extends QuotaManagedPageStoreDir {
    * @param path path of a file
    * @return the corresponding page info for the file otherwise null
    */
-  @Nullable
-  private PageInfo getPageInfo(Path path) {
-    PageId pageId = getPageId(path);
-    long pageSize;
-    if (pageId == null) {
-      LOG.error("Unrecognized page file" + path);
-      return null;
+  private Optional<PageInfo> getPageInfo(Path path) {
+    Optional<PageId> pageId = getPageId(path);
+    if (pageId.isPresent()) {
+      long pageSize;
+      long createdTime;
+      try {
+        pageSize = Files.size(path);
+        FileTime creationTime = (FileTime) Files.getAttribute(path, "creationTime");
+        createdTime = creationTime.toMillis();
+      } catch (IOException e) {
+        LOG.error("Failed to get file size for " + path, e);
+        return Optional.empty();
+      }
+      return Optional.of(new PageInfo(pageId.get(),
+          pageSize, CacheScope.GLOBAL, this, createdTime));
     }
-    try {
-      pageSize = Files.size(path);
-    } catch (IOException e) {
-      LOG.error("Failed to get file size for " + path, e);
-      return null;
-    }
-    return new PageInfo(pageId, pageSize, this);
+    return Optional.empty();
   }
 
   /**
    * @param path path of a file
    * @return the corresponding page id, or null if the file name does not match the pattern
    */
-  @Nullable
-  private PageId getPageId(Path path) {
+  private Optional<PageId> getPageId(Path path) {
     Matcher matcher = mPagePattern.matcher(path.toString());
     if (!matcher.matches()) {
-      return null;
+      LOG.error("Unrecognized page file " + path);
+      return Optional.empty();
     }
     try {
       String fileBucket = Preconditions.checkNotNull(matcher.group(1));
       String fileId = Preconditions.checkNotNull(matcher.group(2));
       if (!fileBucket.equals(getFileBucket(mFileBuckets, fileId))) {
-        return null;
+        LOG.error("Bucket number mismatch " + path);
+        return Optional.empty();
       }
       String fileName = Preconditions.checkNotNull(matcher.group(3));
       long pageIndex = Long.parseLong(fileName);
-      return new PageId(fileId, pageIndex);
+      return Optional.of(new PageId(fileId, pageIndex));
     } catch (NumberFormatException e) {
-      return null;
+      LOG.error("Illegal numbers in path " + path);
+      return Optional.empty();
     }
   }
 }

@@ -22,8 +22,8 @@ import alluxio.client.WriteType;
 import alluxio.client.block.BlockMasterClient;
 import alluxio.client.file.FileSystem;
 import alluxio.client.file.FileSystemTestUtils;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
+import alluxio.conf.PropertyKey;
 import alluxio.exception.AccessControlException;
 import alluxio.exception.DirectoryNotEmptyException;
 import alluxio.exception.ExceptionMessage;
@@ -75,7 +75,6 @@ import alluxio.wire.FileInfo;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.ClassRule;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -188,36 +187,13 @@ public class FileSystemMasterIntegrationTest extends BaseIntegrationTest {
     assertFalse(fileInfo.isPersisted());
     assertFalse(fileInfo.isPinned());
     Assert.assertEquals(Constants.NO_TTL, fileInfo.getTtl());
-    Assert.assertEquals(TtlAction.DELETE, fileInfo.getTtlAction());
+    Assert.assertEquals(TtlAction.FREE, fileInfo.getTtlAction());
     Assert.assertEquals(TEST_USER, fileInfo.getOwner());
     Assert.assertEquals(0644, (short) fileInfo.getMode());
   }
 
   private FsMasterResource createFileSystemMasterFromJournal() throws Exception {
     return MasterTestUtils.createLeaderFileSystemMasterFromJournalCopy();
-  }
-
-  // TODO(calvin): This test currently relies on the fact the HDFS client is a cached instance to
-  // avoid invalid lease exception. This should be fixed.
-  @Ignore
-  @Test
-  public void concurrentCreateJournal() throws Exception {
-    // Makes sure the file id's are the same between a master info and the journal it creates
-    for (int i = 0; i < 5; i++) {
-      ConcurrentCreator concurrentCreator =
-          new ConcurrentCreator(DEPTH, CONCURRENCY_DEPTH, ROOT_PATH);
-      concurrentCreator.call();
-
-      try (FsMasterResource masterResource = createFileSystemMasterFromJournal()) {
-        FileSystemMaster fsMaster = masterResource.getRegistry().get(FileSystemMaster.class);
-        for (FileInfo info : mFsMaster
-            .listStatus(new AlluxioURI("/"), ListStatusContext.defaults())) {
-          AlluxioURI path = new AlluxioURI(info.getPath());
-          Assert.assertEquals(mFsMaster.getFileId(path), fsMaster.getFileId(path));
-        }
-      }
-      before();
-    }
   }
 
   /**
@@ -500,7 +476,8 @@ public class FileSystemMasterIntegrationTest extends BaseIntegrationTest {
     mThrown.expect(InvalidPathException.class);
     mThrown.expectMessage(ExceptionMessage.DELETE_ROOT_DIRECTORY.getMessage());
     mFsMaster.delete(new AlluxioURI("/"),
-        DeleteContext.mergeFrom(DeletePOptions.newBuilder().setRecursive(true)));
+        DeleteContext.mergeFrom(DeletePOptions.newBuilder().setRecursive(true)
+            .setDeleteMountPoint(true)));
   }
 
   @Test
@@ -681,7 +658,8 @@ public class FileSystemMasterIntegrationTest extends BaseIntegrationTest {
     mFsMaster.createDirectory(new AlluxioURI("/testFolder"), CreateDirectoryContext.defaults());
     long ttl = 1;
     CreateFileContext context = CreateFileContext.mergeFrom(CreateFilePOptions.newBuilder()
-        .setCommonOptions(FileSystemMasterCommonPOptions.newBuilder().setTtl(ttl)));
+        .setCommonOptions(FileSystemMasterCommonPOptions.newBuilder().setTtl(ttl)))
+        .setWriteType(WriteType.CACHE_THROUGH);
     long fileId =
         mFsMaster.createFile(new AlluxioURI("/testFolder/testFile1"), context).getFileId();
     FileInfo folderInfo =
@@ -691,8 +669,12 @@ public class FileSystemMasterIntegrationTest extends BaseIntegrationTest {
     // Sleep for the ttl expiration.
     CommonUtils.sleepMs(2 * TTL_CHECKER_INTERVAL_MS);
     HeartbeatScheduler.execute(HeartbeatContext.MASTER_TTL_CHECK);
-    mThrown.expect(FileDoesNotExistException.class);
-    mFsMaster.getFileInfo(fileId);
+    HeartbeatScheduler.await(HeartbeatContext.MASTER_TTL_CHECK, 10, TimeUnit.SECONDS);
+    HeartbeatScheduler.schedule(HeartbeatContext.MASTER_TTL_CHECK);
+    HeartbeatScheduler.await(HeartbeatContext.MASTER_TTL_CHECK, 10, TimeUnit.SECONDS);
+    FileInfo fileInfo = mFsMaster.getFileInfo(fileId);
+    Assert.assertEquals(Constants.NO_TTL, fileInfo.getTtl());
+    Assert.assertEquals(TtlAction.DELETE, fileInfo.getTtlAction());
   }
 
   @Test
@@ -1133,10 +1115,11 @@ public class FileSystemMasterIntegrationTest extends BaseIntegrationTest {
      * @param path the directory of files to be created in
      */
     public void exec(int depth, int concurrencyDepth, AlluxioURI path) throws Exception {
+      CreateFileContext context = CreateFileContext.create(mCreateFileContext.getOptions());
       if (depth < 1) {
         return;
       } else if (depth == 1) {
-        long fileId = mFsMaster.createFile(path, mCreateFileContext).getFileId();
+        long fileId = mFsMaster.createFile(path, context).getFileId();
         Assert.assertEquals(fileId, mFsMaster.getFileId(path));
         // verify the user permission for file
         FileInfo fileInfo = mFsMaster.getFileInfo(fileId);

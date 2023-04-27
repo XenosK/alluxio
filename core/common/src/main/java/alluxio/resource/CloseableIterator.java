@@ -11,6 +11,7 @@
 
 package alluxio.resource;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Lists;
 import com.google.common.io.Closer;
@@ -42,7 +43,7 @@ public abstract class CloseableIterator<T> extends CloseableResource<Iterator<T>
    *
    * @param iterator the resource to wrap
    */
-  CloseableIterator(Iterator<T> iterator) {
+  protected CloseableIterator(Iterator<T> iterator) {
     super(iterator);
     mIter = iterator;
   }
@@ -141,9 +142,13 @@ public abstract class CloseableIterator<T> extends CloseableResource<Iterator<T>
    * @param iter the iter to get the size of
    * @return the size of the iter
    */
+  @VisibleForTesting
   public static int size(CloseableIterator<?> iter) {
-    int size = Iterators.size(iter);
-    iter.close();
-    return size;
+    try {
+      int size = Iterators.size(iter);
+      return size;
+    } finally {
+      iter.close();
+    }
   }
 }

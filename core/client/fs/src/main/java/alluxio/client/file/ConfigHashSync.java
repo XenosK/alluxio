@@ -71,7 +71,7 @@ public final class ConfigHashSync implements HeartbeatExecutor {
   }
 
   @Override
-  public synchronized void heartbeat() {
+  public synchronized void heartbeat(long timeLimitMs) {
     if (!mContext.getClientContext().getClusterConf().clusterDefaultsLoaded()) {
       // Wait until the initial cluster defaults are loaded.
       return;
@@ -86,7 +86,7 @@ public final class ConfigHashSync implements HeartbeatExecutor {
       return;
     }
     boolean isClusterConfUpdated = !hash.getClusterConfigHash().equals(
-        mContext.getClusterConf().hash());
+        mContext.getClientContext().getClusterConfHash());
     boolean isPathConfUpdated = !hash.getPathConfigHash().equals(
         mContext.getClientContext().getPathConfHash());
     if (isClusterConfUpdated || isPathConfUpdated) {

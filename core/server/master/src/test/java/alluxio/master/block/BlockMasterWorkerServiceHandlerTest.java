@@ -17,8 +17,8 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import alluxio.clock.ManualClock;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
+import alluxio.conf.PropertyKey;
 import alluxio.grpc.BlockHeartbeatPRequest;
 import alluxio.grpc.BlockHeartbeatPResponse;
 import alluxio.grpc.BlockIdList;
@@ -28,9 +28,11 @@ import alluxio.grpc.LocationBlockIdListEntry;
 import alluxio.grpc.RegisterWorkerPOptions;
 import alluxio.grpc.RegisterWorkerPRequest;
 import alluxio.grpc.RegisterWorkerPResponse;
+import alluxio.master.AlwaysPrimaryPrimarySelector;
 import alluxio.master.CoreMasterContext;
 import alluxio.master.MasterRegistry;
 import alluxio.master.MasterTestUtils;
+import alluxio.master.journal.noop.NoopJournalSystem;
 import alluxio.master.metrics.MetricsMaster;
 import alluxio.master.metrics.MetricsMasterFactory;
 import alluxio.util.SleepUtils;
@@ -84,7 +86,8 @@ public class BlockMasterWorkerServiceHandlerTest {
     }
 
     mRegistry = new MasterRegistry();
-    CoreMasterContext masterContext = MasterTestUtils.testMasterContext();
+    CoreMasterContext masterContext = MasterTestUtils.testMasterContext(new NoopJournalSystem(),
+        null, new AlwaysPrimaryPrimarySelector());
     mMetricsMaster = new MetricsMasterFactory().create(mRegistry, masterContext);
     mClock = new ManualClock();
     mExecutorService =

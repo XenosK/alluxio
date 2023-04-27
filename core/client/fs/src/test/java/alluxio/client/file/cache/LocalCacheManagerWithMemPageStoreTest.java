@@ -20,6 +20,7 @@ import static org.junit.Assert.assertTrue;
 import alluxio.Constants;
 import alluxio.client.file.CacheContext;
 import alluxio.client.file.cache.evictor.CacheEvictor;
+import alluxio.client.file.cache.evictor.CacheEvictorOptions;
 import alluxio.client.file.cache.evictor.FIFOCacheEvictor;
 import alluxio.client.file.cache.evictor.LRUCacheEvictor;
 import alluxio.client.file.cache.evictor.UnevictableCacheEvictor;
@@ -61,10 +62,12 @@ public final class LocalCacheManagerWithMemPageStoreTest {
 
   private LocalCacheManager mCacheManager;
   private InstancedConfiguration mConf = Configuration.copyGlobal();
-  private MetaStore mMetaStore;
+  private PageMetaStore mPageMetaStore;
   private PageStoreDir mPageStoreDir;
   private CacheEvictor mEvictor;
   private PageStoreOptions mPageStoreOptions;
+
+  private CacheManagerOptions mCacheManagerOptions;
   private byte[] mBuf = new byte[PAGE_SIZE_BYTES];
 
   @Before
@@ -75,12 +78,13 @@ public final class LocalCacheManagerWithMemPageStoreTest {
     mConf.set(PropertyKey.USER_CLIENT_CACHE_QUOTA_ENABLED, false);
     mConf.set(PropertyKey.USER_CLIENT_CACHE_STORE_OVERHEAD, 0);
     mConf.set(PropertyKey.USER_CLIENT_CACHE_STORE_TYPE, PageStoreType.MEM);
+    mCacheManagerOptions = CacheManagerOptions.create(mConf);
     mPageStoreOptions = PageStoreOptions.create(mConf).get(0);
-    mEvictor = new FIFOCacheEvictor(mConf);
-    mMetaStore = new DefaultMetaStore();
+    mEvictor = new FIFOCacheEvictor(new CacheEvictorOptions());
     mPageStoreDir = new MemoryPageStoreDir(mPageStoreOptions,
         (MemoryPageStore) PageStore.create(mPageStoreOptions), mEvictor);
-    mCacheManager = createLocalCacheManager(mConf, mMetaStore, ImmutableList.of(mPageStoreDir));
+    mPageMetaStore = new DefaultPageMetaStore(ImmutableList.of(mPageStoreDir));
+    mCacheManager = createLocalCacheManager(mConf, mPageMetaStore);
   }
 
   private byte[] page(int i, int pageLen) {
@@ -96,16 +100,19 @@ public final class LocalCacheManagerWithMemPageStoreTest {
    */
   private LocalCacheManager createLocalCacheManager() throws Exception {
     mPageStoreOptions = PageStoreOptions.create(mConf).get(0);
-    mPageStoreDir = PageStoreDir.createPageStoreDir(mConf, mPageStoreOptions);
-    return createLocalCacheManager(mConf, mMetaStore, ImmutableList.of(mPageStoreDir));
+    mPageStoreDir = PageStoreDir.createPageStoreDir(mCacheManagerOptions.getCacheEvictorOptions(),
+        mPageStoreOptions);
+    mPageMetaStore = new DefaultPageMetaStore(ImmutableList.of(mPageStoreDir));
+    return createLocalCacheManager(mConf, mPageMetaStore);
   }
 
   /**
    * Creates a manager and waits until it is ready.
    */
-  private LocalCacheManager createLocalCacheManager(AlluxioConfiguration conf, MetaStore metaStore,
-      List<PageStoreDir> dirs) throws Exception {
-    LocalCacheManager cacheManager = LocalCacheManager.create(conf, metaStore, dirs);
+  private LocalCacheManager createLocalCacheManager(AlluxioConfiguration conf,
+      PageMetaStore pageMetaStore) throws Exception {
+    mCacheManagerOptions = CacheManagerOptions.create(conf);
+    LocalCacheManager cacheManager = LocalCacheManager.create(mCacheManagerOptions, pageMetaStore);
     CommonUtils.waitFor("restore completed",
         () -> cacheManager.state() == CacheManager.State.READ_WRITE,
         WaitForOptions.defaults().setTimeoutMs(10000));
@@ -240,11 +247,11 @@ public final class LocalCacheManagerWithMemPageStoreTest {
 
   @Test
   public void noEvictionPolicy() throws Exception {
-    mEvictor = new UnevictableCacheEvictor(mConf);
-    mMetaStore = new DefaultMetaStore();
+    mEvictor = new UnevictableCacheEvictor(new CacheEvictorOptions());
     mPageStoreDir = new MemoryPageStoreDir(mPageStoreOptions,
         (MemoryPageStore) PageStore.create(mPageStoreOptions), mEvictor);
-    mCacheManager = createLocalCacheManager(mConf, mMetaStore, ImmutableList.of(mPageStoreDir));
+    mPageMetaStore = new DefaultPageMetaStore(ImmutableList.of(mPageStoreDir));
+    mCacheManager = createLocalCacheManager(mConf, mPageMetaStore);
     long numPages = CACHE_SIZE_BYTES / PAGE_SIZE_BYTES;
     for (int i = 0; i < numPages; i++) {
       PageId id = pageId(i, 0);
@@ -284,11 +291,11 @@ public final class LocalCacheManagerWithMemPageStoreTest {
 
   @Test
   public void putMoreThanCacheCapacityLRU() throws Exception {
-    mEvictor = new LRUCacheEvictor(mConf);
-    mMetaStore = new DefaultMetaStore();
+    mEvictor = new LRUCacheEvictor(new CacheEvictorOptions());
     mPageStoreDir = new MemoryPageStoreDir(mPageStoreOptions,
         (MemoryPageStore) PageStore.create(mPageStoreOptions), mEvictor);
-    mCacheManager = createLocalCacheManager(mConf, mMetaStore, ImmutableList.of(mPageStoreDir));
+    mPageMetaStore = new DefaultPageMetaStore(ImmutableList.of(mPageStoreDir));
+    mCacheManager = createLocalCacheManager(mConf, mPageMetaStore);
     int cacheSize = CACHE_SIZE_BYTES / PAGE_SIZE_BYTES;
     //fill up the cache
     for (int i = 0; i < cacheSize; i++) {
@@ -325,8 +332,9 @@ public final class LocalCacheManagerWithMemPageStoreTest {
   @Test
   public void putWithInsufficientQuota() throws Exception {
     mConf.set(PropertyKey.USER_CLIENT_CACHE_QUOTA_ENABLED, true);
-    mMetaStore = new QuotaMetaStore(mConf);
-    mCacheManager = createLocalCacheManager(mConf, mMetaStore, ImmutableList.of(mPageStoreDir));
+    mPageMetaStore = new QuotaPageMetaStore(mCacheManagerOptions.getCacheEvictorOptions(),
+        ImmutableList.of(mPageStoreDir));
+    mCacheManager = createLocalCacheManager(mConf, mPageMetaStore);
     CacheScope scope = CacheScope.create("schema.table.partition");
 
     CacheContext context = CacheContext.defaults().setCacheScope(scope);
@@ -357,9 +365,12 @@ public final class LocalCacheManagerWithMemPageStoreTest {
     CacheScope[] quotaCacheScopes =
         {partitionCacheScope, tableCacheScope, schemaCacheScope, CacheScope.GLOBAL};
     for (CacheScope cacheScope : quotaCacheScopes) {
-      mMetaStore = new QuotaMetaStore(mConf);
-      mPageStoreDir = PageStoreDir.createPageStoreDir(mConf, mPageStoreOptions);
-      mCacheManager = createLocalCacheManager(mConf, mMetaStore, ImmutableList.of(mPageStoreDir));
+      mPageStoreDir = PageStoreDir.createPageStoreDir(mCacheManagerOptions.getCacheEvictorOptions(),
+          mPageStoreOptions);
+      mPageMetaStore = new QuotaPageMetaStore(mCacheManagerOptions.getCacheEvictorOptions(),
+          ImmutableList.of(mPageStoreDir));
+      mCacheManager =
+          createLocalCacheManager(mConf, mPageMetaStore);
       CacheQuota quota =
           new CacheQuota(ImmutableMap.of(cacheScope.level(),
               (long) PAGE1.length + PAGE2.length - 1));
@@ -383,9 +394,12 @@ public final class LocalCacheManagerWithMemPageStoreTest {
     CacheScope[] quotaCacheScopes =
         {partitionCacheScope, tableCacheScope, schemaCacheScope, CacheScope.GLOBAL};
     for (CacheScope cacheScope : quotaCacheScopes) {
-      mMetaStore = new QuotaMetaStore(mConf);
-      mPageStoreDir = PageStoreDir.createPageStoreDir(mConf, mPageStoreOptions);
-      mCacheManager = createLocalCacheManager(mConf, mMetaStore, ImmutableList.of(mPageStoreDir));
+      mPageStoreDir = PageStoreDir.createPageStoreDir(mCacheManagerOptions.getCacheEvictorOptions(),
+          mPageStoreOptions);
+      mPageMetaStore = new QuotaPageMetaStore(mCacheManagerOptions.getCacheEvictorOptions(),
+          ImmutableList.of(mPageStoreDir));
+      mCacheManager =
+          createLocalCacheManager(mConf, mPageMetaStore);
       CacheQuota quota = new CacheQuota(ImmutableMap.of(cacheScope.level(),
           (long) CACHE_SIZE_BYTES + 1));
       int cacheSize = CACHE_SIZE_BYTES / PAGE_SIZE_BYTES;
@@ -398,7 +412,7 @@ public final class LocalCacheManagerWithMemPageStoreTest {
           assertEquals(
               0, mCacheManager.get(new PageId("3", i - cacheSize), PAGE_SIZE_BYTES, mBuf, 0));
           //check the subsequent page is still in cache
-          assertEquals(true, mMetaStore.hasPage(new PageId("3", i - cacheSize + 1)));
+          assertEquals(true, mPageMetaStore.hasPage(new PageId("3", i - cacheSize + 1)));
         }
       }
     }
@@ -413,9 +427,12 @@ public final class LocalCacheManagerWithMemPageStoreTest {
     CacheScope schemaCacheScope = CacheScope.create("schema");
     CacheScope[] quotaCacheScopes = {tableCacheScope, schemaCacheScope, CacheScope.GLOBAL};
     for (CacheScope cacheScope : quotaCacheScopes) {
-      mMetaStore = new QuotaMetaStore(mConf);
-      mPageStoreDir = PageStoreDir.createPageStoreDir(mConf, mPageStoreOptions);
-      mCacheManager = createLocalCacheManager(mConf, mMetaStore, ImmutableList.of(mPageStoreDir));
+      mPageStoreDir = PageStoreDir.createPageStoreDir(mCacheManagerOptions.getCacheEvictorOptions(),
+          mPageStoreOptions);
+      mPageMetaStore = new QuotaPageMetaStore(mCacheManagerOptions.getCacheEvictorOptions(),
+          ImmutableList.of(mPageStoreDir));
+      mCacheManager =
+          createLocalCacheManager(mConf, mPageMetaStore);
       CacheQuota quota = new CacheQuota(ImmutableMap.of(
           partitionCacheScope1.level(), (long) PAGE1.length + PAGE2.length,
           cacheScope.level(), (long) PAGE1.length + PAGE2.length - 1

@@ -15,14 +15,12 @@ import static jnr.constants.platform.OpenFlags.O_ACCMODE;
 
 import alluxio.AlluxioURI;
 import alluxio.client.file.FileSystem;
-import alluxio.client.file.URIStatus;
-import alluxio.fuse.AlluxioFuseUtils;
 import alluxio.fuse.auth.AuthPolicy;
+import alluxio.fuse.lock.FuseReadWriteLockManager;
 
 import jnr.constants.platform.OpenFlags;
 
 import java.nio.ByteBuffer;
-import java.util.Optional;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
@@ -50,11 +48,9 @@ public interface FuseFileStream extends AutoCloseable {
   void write(ByteBuffer buf, long size, long offset);
 
   /**
-   * Gets the file length.
-   *
-   * @return file length
+   * @return file status
    */
-  long getFileLength();
+  FileStatus getFileStatus();
 
   /**
    * Flushes the stream.
@@ -78,6 +74,7 @@ public interface FuseFileStream extends AutoCloseable {
    */
   @ThreadSafe
   class Factory {
+    private final FuseReadWriteLockManager mLockManager = new FuseReadWriteLockManager();
     private final FileSystem mFileSystem;
     private final AuthPolicy mAuthPolicy;
 
@@ -104,18 +101,14 @@ public interface FuseFileStream extends AutoCloseable {
      */
     public FuseFileStream create(
         AlluxioURI uri, int flags, long mode) {
-      Optional<URIStatus> status = AlluxioFuseUtils.getPathStatus(mFileSystem, uri);
       switch (OpenFlags.valueOf(flags & O_ACCMODE.intValue())) {
         case O_RDONLY:
-          return FuseFileInStream.create(mFileSystem, uri, status);
+          return FuseFileInStream.create(mFileSystem, mLockManager, uri);
         case O_WRONLY:
-          return FuseFileOutStream.create(mFileSystem, mAuthPolicy, uri, flags, mode, status);
-        case O_RDWR:
-          return FuseFileInOrOutStream.create(mFileSystem, mAuthPolicy, uri, flags, mode, status);
+          return FuseFileOutStream.create(mFileSystem, mAuthPolicy, mLockManager, uri, flags, mode);
         default:
-          throw new RuntimeException(String.format("Cannot create file stream with flag 0x%x. "
-              + "Alluxio does not support file modification. "
-              + "Cannot open directory in fuse.open().", flags));
+          return FuseFileInOrOutStream.create(mFileSystem, mAuthPolicy, mLockManager,
+              uri, flags, mode);
       }
     }
   }

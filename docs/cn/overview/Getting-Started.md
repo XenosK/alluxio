@@ -48,6 +48,18 @@ $ cd alluxio-{{site.ALLUXIO_VERSION_STRING}}
 
 ## 配置 Alluxio
 
+在`${ALLUXIO_HOME}/conf`目录下，根据模板文件创建`conf/alluxio-env.sh`配置文件。
+
+```console
+$ cp conf/alluxio-env.sh.template conf/alluxio-env.sh
+```
+
+在`conf/alluxio-env.sh`文件中为 `JAVA_HOME` 增加配置.例如:
+
+```console
+$ echo "JAVA_HOME=/path/to/java/home" >> conf/alluxio-env.sh
+```
+
 在`${ALLUXIO_HOME}/conf`目录下，根据模板文件创建`conf/alluxio-site.properties`配置文件。
 
 ```console
@@ -303,7 +315,6 @@ Alluxio 可以部署在很多不同的环境下。
 * [Alluxio 使用 CephFS]({{ '/en/ufs/CephFS.html' | relativize_url }})
 * [Alluxio 使用 CephObjectStorage]({{ '/en/ufs/CephObjectStorage.html' | relativize_url }})
 * [Alluxio 使用 Swift]({{ '/en/ufs/Swift.html' | relativize_url }})
-* [Alluxio 使用 GlusterFS]({{ '/en/ufs/GlusterFS.html' | relativize_url }})
 * [Alluxio 使用 HDFS]({{ '/en/ufs/HDFS.html' | relativize_url }})
 * [Alluxio 使用 OSS]({{ '/en/ufs/OSS.html' | relativize_url }})
 * [Alluxio 使用 NFS]({{ '/en/ufs/NFS.html' | relativize_url }})
@@ -314,6 +325,5 @@ Alluxio 可以部署在很多不同的环境下。
 
 * [Apache Spark 使用 Alluxio]({{ '/en/compute/Spark.html' | relativize_url }})
 * [Apache Hadoop MapReduce 使用 Alluxio]({{ '/en/compute/Hadoop-MapReduce.html' | relativize_url }})
-* [Apache HBase 使用 Alluxio]({{ '/en/compute/HBase.html' | relativize_url }})
 * [Apache Hive 使用 Alluxio]({{ '/en/compute/Hive.html' | relativize_url }})
 * [Presto 使用 Alluxio]({{ '/en/compute/Presto.html' | relativize_url }})

@@ -13,8 +13,8 @@ package alluxio.worker.grpc;
 
 import alluxio.RpcUtils;
 import alluxio.annotation.SuppressFBWarnings;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
+import alluxio.conf.PropertyKey;
 import alluxio.grpc.AsyncCacheRequest;
 import alluxio.grpc.AsyncCacheResponse;
 import alluxio.grpc.BlockStatus;
@@ -25,6 +25,8 @@ import alluxio.grpc.ClearMetricsRequest;
 import alluxio.grpc.ClearMetricsResponse;
 import alluxio.grpc.CreateLocalBlockRequest;
 import alluxio.grpc.CreateLocalBlockResponse;
+import alluxio.grpc.FreeWorkerRequest;
+import alluxio.grpc.FreeWorkerResponse;
 import alluxio.grpc.LoadRequest;
 import alluxio.grpc.LoadResponse;
 import alluxio.grpc.MoveBlockRequest;
@@ -62,7 +64,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.OptionalInt;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Server side implementation of the gRPC BlockWorker interface.
@@ -173,21 +175,18 @@ public class BlockWorkerClientServiceHandler extends BlockWorkerGrpc.BlockWorker
 
   @Override
   public void load(LoadRequest request, StreamObserver<LoadResponse> responseObserver) {
-    RpcUtils.call(LOG, () -> {
-      LoadResponse.Builder response = LoadResponse.newBuilder();
-      OptionalInt bandwidth = OptionalInt.empty();
-      if (request.hasBandwidth()) {
-        bandwidth = OptionalInt.of(request.getBandwidth());
-      }
-      List<BlockStatus> failures =
-          mBlockWorker.load(request.getBlocksList(), request.getTag(), bandwidth);
+    CompletableFuture<List<BlockStatus>> failures =
+        mBlockWorker.load(request.getBlocksList(), request.getOptions());
+    CompletableFuture<LoadResponse> future = failures.thenApply(fail -> {
       int numBlocks = request.getBlocksCount();
       TaskStatus taskStatus = TaskStatus.SUCCESS;
-      if (failures.size() > 0) {
-        taskStatus = numBlocks > failures.size() ? TaskStatus.PARTIAL_FAILURE : TaskStatus.FAILURE;
+      if (fail.size() > 0) {
+        taskStatus = numBlocks > fail.size() ? TaskStatus.PARTIAL_FAILURE : TaskStatus.FAILURE;
       }
-      return response.addAllBlockStatus(failures).setStatus(taskStatus).build();
-    }, "load", "request=%s", responseObserver, request);
+      LoadResponse.Builder response = LoadResponse.newBuilder();
+      return response.addAllBlockStatus(fail).setStatus(taskStatus).build();
+    });
+    RpcUtils.invoke(LOG, future, "load", "request=%s", responseObserver, request);
   }
 
   @Override
@@ -211,6 +210,15 @@ public class BlockWorkerClientServiceHandler extends BlockWorkerGrpc.BlockWorker
                   BlockStoreLocation.anyDirInAnyTierWithMedium(request.getMediumType())));
       return MoveBlockResponse.getDefaultInstance();
     }, "moveBlock", "request=%s", responseObserver, request);
+  }
+
+  @Override
+  public void freeWorker(FreeWorkerRequest request,
+       StreamObserver<FreeWorkerResponse> responseObserver) {
+    RpcUtils.call(LOG, () -> {
+      mBlockWorker.freeWorker();
+      return FreeWorkerResponse.getDefaultInstance();
+    }, "freeWorker", "request=%s", responseObserver, request);
   }
 
   @Override

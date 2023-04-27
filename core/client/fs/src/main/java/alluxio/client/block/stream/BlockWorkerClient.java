@@ -19,6 +19,7 @@ import alluxio.grpc.CreateLocalBlockRequest;
 import alluxio.grpc.CreateLocalBlockResponse;
 import alluxio.grpc.GrpcServerAddress;
 import alluxio.grpc.LoadRequest;
+import alluxio.grpc.LoadResponse;
 import alluxio.grpc.MoveBlockRequest;
 import alluxio.grpc.MoveBlockResponse;
 import alluxio.grpc.OpenLocalBlockRequest;
@@ -31,6 +32,7 @@ import alluxio.grpc.WriteRequest;
 import alluxio.grpc.WriteResponse;
 import alluxio.security.user.UserState;
 
+import com.google.common.util.concurrent.ListenableFuture;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 
@@ -56,12 +58,7 @@ public interface BlockWorkerClient extends Closeable {
     public static BlockWorkerClient create(UserState userState, GrpcServerAddress address,
         AlluxioConfiguration alluxioConf)
         throws IOException {
-      try {
-        return new DefaultBlockWorkerClient(userState, address, alluxioConf);
-      } catch (Exception e) {
-        throw new IOException(
-            String.format("Failed to connect to block worker (%s)", address), e);
-      }
+      return new DefaultBlockWorkerClient(userState, address, alluxioConf);
     }
   }
 
@@ -152,10 +149,16 @@ public interface BlockWorkerClient extends Closeable {
   void cache(CacheRequest request);
 
   /**
+   * Free this worker.
+   */
+  void freeWorker();
+
+  /**
    * load blocks into alluxio.
    *
    * @param request the cache request
+   * @return listenable future of LoadResponse
    * @throws StatusRuntimeException if any error occurs
    */
-  void load(LoadRequest request);
+  ListenableFuture<LoadResponse> load(LoadRequest request);
 }

@@ -28,11 +28,15 @@ public final class S3Constants {
    * mount:point:bucket represents Alluxio directory /mount/point/bucket.
    */
   public static final String BUCKET_SEPARATOR = ":";
+  public static final String EMPTY = "";
 
   /* Headers */
   // standard headers
   public static final String S3_CONTENT_TYPE_HEADER = "Content-Type";
   public static final String S3_CONTENT_LENGTH_HEADER = "Content-Length";
+  public static final String S3_CONTENT_RANGE_HEADER = "Content-Range";
+  public static final String S3_ACCEPT_RANGES_HEADER = "accept-ranges";
+  public static final String S3_ACCEPT_RANGES_VALUE = "bytes";
 
   // AWS headers
   public static final String S3_ACL_HEADER = "x-amz-acl";
@@ -78,6 +82,9 @@ public final class S3Constants {
 
   public static final String S3_DATE_FORMAT_REGEXP = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
   public static final String S3_STANDARD_STORAGE_CLASS = "STANDARD";
+
+  // TODO(czhu): prefix multipart upload part file names with this
+  public static final String S3_MULTIPART_PART_PREFIX = "part_";
 
   /**
    * Directive specifies whether metadata/tag-set are copied from the source object

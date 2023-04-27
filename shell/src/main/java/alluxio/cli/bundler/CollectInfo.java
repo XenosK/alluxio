@@ -25,7 +25,6 @@ import alluxio.exception.AlluxioException;
 import alluxio.shell.CommandReturn;
 import alluxio.util.ConfigurationUtils;
 import alluxio.util.ShellUtils;
-import alluxio.util.io.FileUtils;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -374,9 +373,9 @@ public class CollectInfo extends AbstractShell {
 
     // Delete the temp dir
     try {
-      FileUtils.delete(tempDir.getPath());
+      java.nio.file.Files.deleteIfExists(Paths.get(tempDir.getPath()));
     } catch (IOException e) {
-      LOG.warn("Failed to delete temp dir {}", tempDir.toString());
+      LOG.warn("Failed to delete temp dir {}", tempDir);
     }
 
     return ret;
@@ -539,7 +538,7 @@ public class CollectInfo extends AbstractShell {
    */
   public static <T> CompletableFuture<List<T>> collectAllFutures(
           List<CompletableFuture<T>> futures) {
-    CompletableFuture[] cfs = futures.toArray(new CompletableFuture[futures.size()]);
+    CompletableFuture[] cfs = futures.toArray(new CompletableFuture[0]);
 
     return CompletableFuture.allOf(cfs)
             .thenApply(f -> futures.stream()

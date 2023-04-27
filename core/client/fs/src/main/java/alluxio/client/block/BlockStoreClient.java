@@ -125,7 +125,7 @@ public final class BlockStoreClient {
    *
    * @param blockId the id of the block to read
    * @param options the options associated with the read request
-   * @param failedWorkers the map of workers addresses to most recent failure time
+   * @param failedWorkers the map of worker's addresses to most recent failure time
    * @return a stream which reads from the beginning of the block
    */
   public BlockInStream getInStream(long blockId, InStreamOptions options,
@@ -140,7 +140,7 @@ public final class BlockStoreClient {
    *
    * @param info the block info
    * @param options the options associated with the read request
-   * @param failedWorkers the map of workers addresses to most recent failure time
+   * @param failedWorkers the map of worker's addresses to most recent failure time
    * @return a stream which reads from the beginning of the block
    */
   public BlockInStream getInStream(BlockInfo info, InStreamOptions options,
@@ -154,6 +154,7 @@ public final class BlockStoreClient {
     } catch (UnavailableException e) {
       //When BlockInStream created failed, it will update the passed-in failedWorkers
       //to attempt to avoid reading from this failed worker in next try.
+      LOG.info("Added {} to failedWorkers for {}", dataSource, e.toString());
       failedWorkers.put(dataSource, System.currentTimeMillis());
       throw e;
     }
@@ -168,7 +169,7 @@ public final class BlockStoreClient {
    * @param info the info of the block to read
    * @param status the URIStatus associated with the read request
    * @param policy the policy determining the Alluxio worker location
-   * @param failedWorkers the map of workers addresses to most recent failure time
+   * @param failedWorkers the map of worker's addresses to most recent failure time
    * @return the data source and type of data source of the block
    */
   public Pair<WorkerNetAddress, BlockInStreamSource> getDataSourceAndType(BlockInfo info,

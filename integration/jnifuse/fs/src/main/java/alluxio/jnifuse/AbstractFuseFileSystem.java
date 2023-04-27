@@ -16,7 +16,6 @@ import alluxio.jnifuse.struct.FuseContext;
 import alluxio.jnifuse.struct.FuseFileInfo;
 import alluxio.jnifuse.struct.Statvfs;
 import alluxio.jnifuse.utils.SecurityUtils;
-import alluxio.jnifuse.utils.VersionPreference;
 
 import org.apache.commons.lang3.SystemUtils;
 import org.slf4j.Logger;
@@ -25,7 +24,9 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -37,7 +38,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public abstract class AbstractFuseFileSystem implements FuseFileSystem {
 
   static {
-    LibFuse.loadLibrary(VersionPreference.NO);
     // Preload dependencies for jnr-runtime to avoid exceptions during class loading
     // when launching a large number of pods in kubernetes. (to resolve issues/15679)
     jnr.ffi.Runtime.getSystemRuntime();
@@ -66,31 +66,29 @@ public abstract class AbstractFuseFileSystem implements FuseFileSystem {
    *
    * @param blocking whether this command is blocking
    * @param debug whether to show debug information
-   * @param fuseOpts
+   * @param fuseOpts the fuse mount options
    */
-  public void mount(boolean blocking, boolean debug, String[] fuseOpts) {
+  public void mount(boolean blocking, boolean debug, Set<String> fuseOpts) {
     if (!mMounted.compareAndSet(false, true)) {
       throw new FuseException("Fuse File System already mounted!");
     }
     LOG.info("Mounting {}: blocking={}, debug={}, fuseOpts=\"{}\"",
-        mMountPoint, blocking, debug, Arrays.toString(fuseOpts));
-    String[] arg;
+        mMountPoint, blocking, debug, String.join(",", fuseOpts));
+    List<String> args = new ArrayList<>();
+    args.add(getFileSystemName());
+    args.add("-f");
+    if (debug) {
+      args.add("-d");
+    }
     String mountPointStr = mMountPoint.toString();
     if (mountPointStr.endsWith("\\")) {
       mountPointStr = mountPointStr.substring(0, mountPointStr.length() - 1);
     }
-    if (!debug) {
-      arg = new String[] {getFileSystemName(), "-f", mountPointStr};
-    } else {
-      arg = new String[] {getFileSystemName(), "-f", "-d", mountPointStr};
+    args.add(mountPointStr);
+    if (fuseOpts.size() != 0) {
+      fuseOpts.stream().map(opt -> "-o" + opt).forEach(args::add);
     }
-    if (fuseOpts.length != 0) {
-      int argLen = arg.length;
-      arg = Arrays.copyOf(arg, argLen + fuseOpts.length);
-      System.arraycopy(fuseOpts, 0, arg, argLen, fuseOpts.length);
-    }
-
-    final String[] args = arg;
+    final String[] argsArray = args.toArray(new String[0]);
     try {
       if (SecurityUtils.canHandleShutdownHooks()) {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -100,10 +98,10 @@ public abstract class AbstractFuseFileSystem implements FuseFileSystem {
       }
       int res;
       if (blocking) {
-        res = execMount(args);
+        res = execMount(argsArray);
       } else {
         try {
-          res = CompletableFuture.supplyAsync(() -> execMount(args)).get(MOUNT_TIMEOUT_MS,
+          res = CompletableFuture.supplyAsync(() -> execMount(argsArray)).get(MOUNT_TIMEOUT_MS,
               TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
           // ok
@@ -282,9 +280,9 @@ public abstract class AbstractFuseFileSystem implements FuseFileSystem {
     }
   }
 
-  public int renameCallback(String oldPath, String newPath) {
+  public int renameCallback(String oldPath, String newPath, int flags) {
     try {
-      return rename(oldPath, newPath);
+      return rename(oldPath, newPath, flags);
     } catch (Exception e) {
       LOG.error("Failed to rename {}, newPath {}: ", oldPath, newPath, e);
       return -ErrorCodes.EIO();

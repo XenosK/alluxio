@@ -26,6 +26,7 @@ import alluxio.grpc.StorageList;
 import alluxio.grpc.WorkerLostStorageInfo;
 import alluxio.master.Master;
 import alluxio.master.block.meta.MasterWorkerInfo;
+import alluxio.master.journal.JournalContext;
 import alluxio.metrics.Metric;
 import alluxio.proto.meta.Block;
 import alluxio.wire.Address;
@@ -36,8 +37,8 @@ import alluxio.wire.WorkerNetAddress;
 
 import com.google.common.annotations.VisibleForTesting;
 
-import java.util.Collection;
 import java.time.Clock;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -61,6 +62,11 @@ public interface BlockMaster extends Master, ContainerIdGenerable {
    * @return the number of lost workers
    */
   int getLostWorkerCount();
+
+  /**
+   * @return the number of decommissioned workers
+   */
+  int getDecommissionedWorkerCount();
 
   /**
    * @return the total capacity (in bytes) on all tiers, on all workers of Alluxio
@@ -117,6 +123,19 @@ public interface BlockMaster extends Master, ContainerIdGenerable {
   List<WorkerLostStorageInfo> getWorkerLostStorage();
 
   /**
+   * @param workerId the worker id
+   * @return true if the worker is excluded, otherwise false
+   */
+  boolean isNotServing(long workerId);
+
+  /**
+   * Decommission a worker.
+   *
+   * @param workerName the worker hostname of worker to be decommissioned
+   */
+  void decommissionWorker(String workerName) throws NotFoundException;
+
+  /**
    * Removes blocks from workers.
    *
    * @param blockIds a list of block ids to remove from Alluxio space
@@ -157,7 +176,20 @@ public interface BlockMaster extends Master, ContainerIdGenerable {
    * @param blockId the id of the block to commit
    * @param length the length of the block
    */
-  void commitBlockInUFS(long blockId, long length) throws UnavailableException;
+  default void commitBlockInUFS(long blockId, long length) throws UnavailableException {
+    try (JournalContext journalContext = createJournalContext()) {
+      commitBlockInUFS(blockId, length, journalContext);
+    }
+  }
+
+  /**
+   * Marks a block as committed, but without a worker location. This means the block is only in ufs.
+   * Append any created journal entries to the included context.
+   * @param blockId the id of the block to commit
+   * @param length the length of the block
+   * @param context the journal context
+   */
+  void commitBlockInUFS(long blockId, long length, JournalContext context);
 
   /**
    * @param blockId the block id to get information for
@@ -298,6 +330,13 @@ public interface BlockMaster extends Master, ContainerIdGenerable {
   void registerWorkerLostListener(Consumer<Address> function);
 
   /**
+   * Registers callback functions to use when detecting lost workers.
+   *
+   * @param function the function to register
+   */
+  void registerWorkerDeleteListener(Consumer<Address> function);
+
+  /**
    * Registers callback functions to use when workers register with configuration.
    *
    * @param function the function to register
@@ -343,4 +382,27 @@ public interface BlockMaster extends Master, ContainerIdGenerable {
    * @return the current clock
    */
   Clock getClock();
+
+  /**
+   * Returns the internal JournaledNextContainerId.
+   *
+   * @return JournaledNextContainerId
+   */
+  @VisibleForTesting
+  long getJournaledNextContainerId();
+
+  /**
+   * Removes all associated metadata about the decommissioned worker from block master.
+   *
+   * The worker to free must have been decommissioned.
+   * @param workerId the workerId of target worker
+   */
+  void removeDecommissionedWorker(long workerId) throws NotFoundException;
+
+  /**
+   * Notify the worker id to a master.
+   * @param workerId the worker id
+   * @param workerNetAddress the worker address
+   */
+  void notifyWorkerId(long workerId, WorkerNetAddress workerNetAddress);
 }

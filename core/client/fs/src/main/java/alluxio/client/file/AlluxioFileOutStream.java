@@ -33,12 +33,13 @@ import alluxio.resource.CloseableResource;
 import alluxio.retry.ExponentialTimeBoundedRetry;
 import alluxio.retry.RetryPolicy;
 import alluxio.util.CommonUtils;
-import alluxio.util.FileSystemOptions;
+import alluxio.util.FileSystemOptionsUtils;
 import alluxio.wire.BlockInfo;
 import alluxio.wire.OperationId;
 import alluxio.wire.WorkerNetAddress;
 
 import com.codahale.metrics.Counter;
+import com.codahale.metrics.Timer;
 import com.google.common.base.Preconditions;
 import com.google.common.io.Closer;
 import org.slf4j.Logger;
@@ -154,7 +155,8 @@ public class AlluxioFileOutStream extends FileOutStream {
     if (mClosed) {
       return;
     }
-    try {
+    try (Timer.Context ctx = MetricsSystem
+            .uniformTimer(MetricKey.CLOSE_ALLUXIO_OUTSTREAM_LATENCY.getName()).time()) {
       if (mCurrentBlockOutStream != null) {
         mPreviousBlockOutStreams.add(mCurrentBlockOutStream);
       }
@@ -168,6 +170,8 @@ public class AlluxioFileOutStream extends FileOutStream {
         } else {
           mUnderStorageOutputStream.close();
           optionsBuilder.setUfsLength(mBytesWritten);
+          mUnderStorageOutputStream.getDataWriter().getUfsContentHash().ifPresent(
+              optionsBuilder::setContentHash);
         }
       }
 
@@ -193,7 +197,8 @@ public class AlluxioFileOutStream extends FileOutStream {
       if (!mCanceled && mUnderStorageType.isAsyncPersist()
           && mOptions.getPersistenceWaitTime() != Constants.NO_AUTO_PERSIST) {
         optionsBuilder.setAsyncPersistOptions(
-            FileSystemOptions.scheduleAsyncPersistDefaults(mContext.getPathConf(mUri)).toBuilder()
+            FileSystemOptionsUtils.scheduleAsyncPersistDefaults(
+                mContext.getPathConf(mUri)).toBuilder()
                 .setCommonOptions(mOptions.getCommonOptions())
                 .setPersistenceWaitTime(mOptions.getPersistenceWaitTime()));
       }

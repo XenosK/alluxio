@@ -28,6 +28,7 @@ import alluxio.underfs.UnderFileSystem;
 import alluxio.underfs.options.CreateOptions;
 import alluxio.underfs.options.DeleteOptions;
 import alluxio.underfs.options.FileLocationOptions;
+import alluxio.underfs.options.GetFileStatusOptions;
 import alluxio.underfs.options.ListOptions;
 import alluxio.underfs.options.MkdirsOptions;
 import alluxio.underfs.options.OpenOptions;
@@ -37,6 +38,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.List;
 import java.util.Map;
+import javax.annotation.Nullable;
 
 /**
  * Forwarder for {@link UnderFileSystem} objects that works through with ForkJoinPool's
@@ -259,7 +261,7 @@ public class ManagedBlockingUfsForwarder implements UnderFileSystem {
   }
 
   @Override
-  public UfsFileStatus getFileStatus(String path) throws IOException {
+  public UfsFileStatus getFileStatus(String path, GetFileStatusOptions options) throws IOException {
     return new ManagedBlockingUfsMethod<UfsFileStatus>() {
       @Override
       public UfsFileStatus execute() throws IOException {
@@ -286,6 +288,11 @@ public class ManagedBlockingUfsForwarder implements UnderFileSystem {
   @Override
   public Fingerprint getParsedFingerprint(String path) {
     return mUfs.getParsedFingerprint(path);
+  }
+
+  @Override
+  public Fingerprint getParsedFingerprint(String path, @Nullable String contentHash) {
+    return mUfs.getParsedFingerprint(path, contentHash);
   }
 
   @Override

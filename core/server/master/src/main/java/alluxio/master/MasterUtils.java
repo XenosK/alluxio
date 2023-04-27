@@ -12,8 +12,8 @@
 package alluxio.master;
 
 import alluxio.Constants;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
+import alluxio.conf.PropertyKey;
 import alluxio.master.metastore.BlockMetaStore;
 import alluxio.master.metastore.InodeStore;
 import alluxio.master.metastore.MetastoreType;
@@ -62,7 +62,8 @@ public final class MasterUtils {
    * @return a block store factory of the configured type
    */
   public static BlockMetaStore.Factory getBlockStoreFactory(String baseDir) {
-    MetastoreType type =
+    MetastoreType type = Configuration.isSetByUser(PropertyKey.MASTER_BLOCK_METASTORE)
+        ? Configuration.getEnum(PropertyKey.MASTER_BLOCK_METASTORE, MetastoreType.class) :
         Configuration.getEnum(PropertyKey.MASTER_METASTORE, MetastoreType.class);
     switch (type) {
       case HEAP:
@@ -79,7 +80,8 @@ public final class MasterUtils {
    * @return an inode store factory of the configured type
    */
   public static InodeStore.Factory getInodeStoreFactory(String baseDir) {
-    MetastoreType type =
+    MetastoreType type = Configuration.isSetByUser(PropertyKey.MASTER_INODE_METASTORE)
+        ? Configuration.getEnum(PropertyKey.MASTER_INODE_METASTORE, MetastoreType.class) :
         Configuration.getEnum(PropertyKey.MASTER_METASTORE, MetastoreType.class);
     switch (type) {
       case HEAP:

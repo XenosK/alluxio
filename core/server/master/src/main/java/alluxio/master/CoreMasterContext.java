@@ -19,6 +19,8 @@ import alluxio.underfs.MasterUfsManager;
 
 import com.google.common.base.Preconditions;
 
+import javax.annotation.Nullable;
+
 /**
  * This class stores fields that are specific to core masters.
  */
@@ -28,11 +30,14 @@ public class CoreMasterContext extends MasterContext<MasterUfsManager> {
   private final BlockMetaStore.Factory mBlockStoreFactory;
   private final InodeStore.Factory mInodeStoreFactory;
   private final JournalSystem mJournalSystem;
+  @Nullable
+  private final PrimarySelector mPrimarySelector;
   private final long mStartTimeMs;
   private final int mPort;
 
   private CoreMasterContext(Builder builder) {
-    super(builder.mJournalSystem, builder.mUserState, builder.mUfsManager);
+    super(builder.mJournalSystem, builder.mPrimarySelector, builder.mUserState,
+        builder.mUfsManager);
 
     mSafeModeManager = Preconditions.checkNotNull(builder.mSafeModeManager, "safeModeManager");
     mBackupManager = Preconditions.checkNotNull(builder.mBackupManager, "backupManager");
@@ -43,6 +48,7 @@ public class CoreMasterContext extends MasterContext<MasterUfsManager> {
     mJournalSystem = Preconditions.checkNotNull(builder.mJournalSystem, "journalSystem");
     mStartTimeMs = builder.mStartTimeMs;
     mPort = builder.mPort;
+    mPrimarySelector = builder.mPrimarySelector;
   }
 
   /**
@@ -93,6 +99,13 @@ public class CoreMasterContext extends MasterContext<MasterUfsManager> {
   }
 
   /**
+   * @return the leader selector
+   */
+  public @Nullable PrimarySelector getPrimarySelector() {
+    return mPrimarySelector;
+  }
+
+  /**
    * @return a new builder
    */
   public static Builder newBuilder() {
@@ -104,6 +117,7 @@ public class CoreMasterContext extends MasterContext<MasterUfsManager> {
    */
   public static class Builder {
     private JournalSystem mJournalSystem;
+    private PrimarySelector mPrimarySelector;
     private UserState mUserState;
     private SafeModeManager mSafeModeManager;
     private BackupManager mBackupManager;
@@ -119,6 +133,15 @@ public class CoreMasterContext extends MasterContext<MasterUfsManager> {
      */
     public Builder setJournalSystem(JournalSystem journalSystem) {
       mJournalSystem = journalSystem;
+      return this;
+    }
+
+    /**
+     * @param primarySelector the primary selector
+     * @return the builder
+     */
+    public Builder setPrimarySelector(PrimarySelector primarySelector) {
+      mPrimarySelector = primarySelector;
       return this;
     }
 

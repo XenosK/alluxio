@@ -13,11 +13,12 @@ package alluxio.client.fuse;
 
 import alluxio.client.file.FileSystem;
 import alluxio.client.file.FileSystemContext;
-import alluxio.conf.AlluxioConfiguration;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
-import alluxio.fuse.AlluxioFuseFileSystemOpts;
+import alluxio.conf.PropertyKey;
 import alluxio.fuse.AlluxioJnrFuseFileSystem;
+import alluxio.fuse.options.FuseOptions;
+
+import org.junit.Assume;
 
 import java.nio.file.Paths;
 
@@ -35,11 +36,12 @@ public class JNRFuseIntegrationTest extends AbstractFuseIntegrationTest {
   @Override
   public void mountFuse(FileSystemContext context,
       FileSystem fileSystem, String mountPoint, String alluxioRoot) {
+    Assume.assumeTrue(Configuration.getInt(PropertyKey.FUSE_JNIFUSE_LIBFUSE_VERSION) == 2);
     Configuration.set(PropertyKey.FUSE_MOUNT_ALLUXIO_PATH, alluxioRoot);
     Configuration.set(PropertyKey.FUSE_MOUNT_POINT, mountPoint);
-    AlluxioConfiguration conf = Configuration.global();
-    AlluxioFuseFileSystemOpts fuseFsOpts = AlluxioFuseFileSystemOpts.create(conf);
-    mFuseFileSystem = new AlluxioJnrFuseFileSystem(fileSystem, fuseFsOpts);
+    Configuration.set(PropertyKey.FUSE_USER_GROUP_TRANSLATION_ENABLED, true);
+    mFuseFileSystem = new AlluxioJnrFuseFileSystem(fileSystem, Configuration.global(),
+        FuseOptions.create(Configuration.global()));
     mFuseFileSystem.mount(Paths.get(mountPoint), false, false, new String[] {"-odirect_io"});
   }
 

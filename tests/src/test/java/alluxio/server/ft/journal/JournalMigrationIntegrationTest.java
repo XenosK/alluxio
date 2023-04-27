@@ -19,8 +19,8 @@ import alluxio.ClientContext;
 import alluxio.client.file.FileSystem;
 import alluxio.client.meta.MetaMasterClient;
 import alluxio.client.meta.RetryHandlingMetaMasterClient;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
+import alluxio.conf.PropertyKey;
 import alluxio.grpc.BackupPOptions;
 import alluxio.grpc.BackupPRequest;
 import alluxio.master.MasterClientContext;
@@ -48,6 +48,8 @@ public final class JournalMigrationIntegrationTest extends BaseIntegrationTest {
         .addProperty(PropertyKey.MASTER_JOURNAL_TYPE, JournalType.UFS)
         // Masters become primary faster
         .addProperty(PropertyKey.ZOOKEEPER_SESSION_TIMEOUT, "1sec")
+        // Disable backup delegation
+        .addProperty(PropertyKey.MASTER_BACKUP_DELEGATION_ENABLED, false)
         .build();
     try {
       cluster.start();

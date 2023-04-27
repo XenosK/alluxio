@@ -16,15 +16,16 @@ import static alluxio.metrics.MetricInfo.UFS_OP_SAVED_PREFIX;
 
 import alluxio.AlluxioURI;
 import alluxio.Constants;
+import alluxio.ProjectConstants;
 import alluxio.RestUtils;
 import alluxio.RuntimeConstants;
 import alluxio.StorageTierAssoc;
 import alluxio.client.file.FileInStream;
 import alluxio.client.file.FileSystem;
 import alluxio.client.file.URIStatus;
+import alluxio.conf.Configuration;
 import alluxio.conf.ConfigurationValueOptions;
 import alluxio.conf.PropertyKey;
-import alluxio.conf.Configuration;
 import alluxio.exception.AccessControlException;
 import alluxio.exception.AlluxioException;
 import alluxio.exception.FileDoesNotExistException;
@@ -40,6 +41,7 @@ import alluxio.master.file.DefaultFileSystemMaster;
 import alluxio.master.file.FileSystemMaster;
 import alluxio.master.file.contexts.ListStatusContext;
 import alluxio.master.file.meta.MountTable;
+import alluxio.master.throttle.SystemMonitor.SystemStatus;
 import alluxio.metrics.MetricKey;
 import alluxio.metrics.MetricsSystem;
 import alluxio.security.authentication.AuthenticatedClientUser;
@@ -63,11 +65,13 @@ import alluxio.wire.Capacity;
 import alluxio.wire.ConfigCheckReport;
 import alluxio.wire.FileBlockInfo;
 import alluxio.wire.FileInfo;
+import alluxio.wire.MasterInfo;
 import alluxio.wire.MasterWebUIBrowse;
 import alluxio.wire.MasterWebUIConfiguration;
 import alluxio.wire.MasterWebUIData;
 import alluxio.wire.MasterWebUIInit;
 import alluxio.wire.MasterWebUILogs;
+import alluxio.wire.MasterWebUIMasters;
 import alluxio.wire.MasterWebUIMetrics;
 import alluxio.wire.MasterWebUIMountTable;
 import alluxio.wire.MasterWebUIOverview;
@@ -146,6 +150,7 @@ public final class AlluxioMasterRestServiceHandler {
   public static final String WEBUI_WORKERS = "webui_workers";
   public static final String WEBUI_METRICS = "webui_metrics";
   public static final String WEBUI_MOUNTTABLE = "webui_mounttable";
+  public static final String WEBUI_MASTERS = "webui_masters";
 
   // queries
   public static final String QUERY_RAW_CONFIGURATION = "raw_configuration";
@@ -160,6 +165,8 @@ public final class AlluxioMasterRestServiceHandler {
   private final FileSystemMaster mFileSystemMaster;
   private final MetaMaster mMetaMaster;
   private final FileSystem mFsClient;
+
+  private static final int MASTER_ID_NULL = -1;
 
   /**
    * Constructs a new {@link AlluxioMasterRestServiceHandler}.
@@ -202,7 +209,8 @@ public final class AlluxioMasterRestServiceHandler {
           .setRpcAddress(mMasterProcess.getRpcAddress().toString())
           .setStartTimeMs(mMasterProcess.getStartTimeMs())
           .setTierCapacity(getTierCapacityInternal()).setUfsCapacity(getUfsCapacityInternal())
-          .setUptimeMs(mMasterProcess.getUptimeMs()).setVersion(RuntimeConstants.VERSION)
+          .setUptimeMs(mMasterProcess.getUptimeMs())
+          .setVersion(RuntimeConstants.VERSION).setRevision(ProjectConstants.REVISION)
           .setWorkers(mBlockMaster.getWorkerInfoList());
     }, Configuration.global());
   }
@@ -255,6 +263,7 @@ public final class AlluxioMasterRestServiceHandler {
           .setStartTime(CommonUtils.convertMsToDate(mMetaMaster.getStartTimeMs(),
               Configuration.getString(PropertyKey.USER_DATE_FORMAT_PATTERN)))
           .setVersion(RuntimeConstants.VERSION)
+          .setRevision(ProjectConstants.REVISION)
           .setLiveWorkerNodes(Integer.toString(mBlockMaster.getWorkerCount()))
           .setCapacity(FormatUtils.getSizeFromBytes(mBlockMaster.getCapacityBytes()))
           .setClusterId(mMetaMaster.getClusterID())
@@ -363,6 +372,14 @@ public final class AlluxioMasterRestServiceHandler {
       if (leaderIdGauge != null) {
         response.setLeaderId((String) leaderIdGauge.getValue());
       }
+      // Add master system status
+      Gauge systemStatusGauge = MetricsSystem.METRIC_REGISTRY.getGauges()
+              .get("Master.system.status");
+      if (systemStatusGauge != null) {
+        SystemStatus systemStatus = (SystemStatus) systemStatusGauge.getValue();
+        response.setSystemStatus(systemStatus.toString());
+      }
+
       return response;
     }, Configuration.global());
   }
@@ -679,9 +696,6 @@ public final class AlluxioMasterRestServiceHandler {
       }
       response.setDebug(Configuration.getBoolean(PropertyKey.DEBUG)).setInvalidPathError("")
           .setViewingOffset(0).setCurrentPath("");
-      //response.setDownloadLogFile(1);
-      //response.setBaseUrl("./browseLogs");
-      //response.setShowPermissions(false);
 
       String logsPath = Configuration.getString(PropertyKey.LOGS_DIR);
       File logsDir = new File(logsPath);
@@ -726,7 +740,6 @@ public final class AlluxioMasterRestServiceHandler {
         }
       } else {
         // Request a specific log file.
-
         // Only allow filenames as the path, to avoid arbitrary local path lookups.
         requestFile = new File(requestFile).getName();
         response.setCurrentPath(requestFile);
@@ -846,6 +859,44 @@ public final class AlluxioMasterRestServiceHandler {
 
       return response;
     }, Configuration.global());
+  }
+
+  /**
+   * Gets Web UI Master page data.
+   *
+   * @return the response object
+   */
+  @GET
+  @Path(WEBUI_MASTERS)
+  public Response getWebUIMasters() {
+    final Map<String, Gauge> gauges = MetricsSystem.METRIC_REGISTRY.getGauges();
+    Gauge lastCheckpointGauge = gauges
+        .get(MetricKey.MASTER_JOURNAL_LAST_CHECKPOINT_TIME.getName());
+    long lastCheckpointTime = lastCheckpointGauge == null ? 0
+        : (long) lastCheckpointGauge.getValue();
+    Gauge journalEntriesGauge = gauges
+        .get(MetricKey.MASTER_JOURNAL_ENTRIES_SINCE_CHECKPOINT.getName());
+    long journalEntriesSinceCheckpoint = journalEntriesGauge == null ? 0
+        : (long) journalEntriesGauge.getValue();
+
+    Gauge lastGainPrimacyGuage = gauges
+        .get(MetricKey.MASTER_LAST_GAIN_PRIMACY_TIME.getName());
+    long lastGainPrimacyTime = lastGainPrimacyGuage == null ? 0
+        : (long) lastGainPrimacyGuage.getValue();
+
+    return RestUtils.call(() -> new MasterWebUIMasters()
+        .setDebug(Configuration.getBoolean(PropertyKey.DEBUG))
+        .setLostMasterInfos(mMetaMaster.getLostMasterInfos())
+        .setStandbyMasterInfos(mMetaMaster.getStandbyMasterInfos())
+        .setPrimaryMasterInfo(new MasterInfo(MASTER_ID_NULL, mMetaMaster.getMasterAddress())
+            .setLastUpdatedTimeMs(System.currentTimeMillis())
+            .setStartTimeMs(mMasterProcess.getStartTimeMs())
+            .setGainPrimacyTimeMs(lastGainPrimacyTime)
+            .setLastCheckpointTimeMs(lastCheckpointTime)
+            .setJournalEntriesSinceCheckpoint(journalEntriesSinceCheckpoint)
+            .setVersion(ProjectConstants.VERSION)
+            .setRevision(ProjectConstants.REVISION)),
+        Configuration.global());
   }
 
   /**

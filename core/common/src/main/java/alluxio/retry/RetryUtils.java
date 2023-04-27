@@ -13,7 +13,7 @@ package alluxio.retry;
 
 import alluxio.conf.Configuration;
 import alluxio.conf.PropertyKey;
-import alluxio.exception.AlluxioRuntimeException;
+import alluxio.exception.runtime.AlluxioRuntimeException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,7 +30,8 @@ public final class RetryUtils {
 
   /**
    * Retries the given method until it doesn't throw an IO exception or the retry policy expires. If
-   * the retry policy expires, the last exception generated will be rethrown.
+   * the retry policy expires, the last exception generated will be rethrown. If no retry succeeds
+   * then a default IO Exception will be thrown.
    *
    * @param action a description of the action that fits the phrase "Failed to ${action}"
    * @param f the function to retry
@@ -45,10 +46,14 @@ public final class RetryUtils {
         return;
       } catch (IOException ioe) {
         e = ioe;
-        LOG.warn("Failed to {} (attempt {}): {}", action, policy.getAttemptCount(), e.toString());
+        LOG.debug("Failed to {} (attempt {}): {}", action, policy.getAttemptCount(), e.toString());
       }
     }
-    throw e;
+    if (e != null) {
+      throw e;
+    }
+    throw new IOException(String.format("Failed to run action %s after %d attempts",
+        action, policy.getAttemptCount()));
   }
 
   /**
@@ -70,6 +75,9 @@ public final class RetryUtils {
       } catch (Exception e) {
         LOG.warn("Failed to {} (attempt {}): {}", description, policy.getAttemptCount(),
             e.toString());
+        if (e instanceof AlluxioRuntimeException && !((AlluxioRuntimeException) e).isRetryable()) {
+          throw AlluxioRuntimeException.from(e);
+        }
         cause = e;
       }
     }

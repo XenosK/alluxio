@@ -11,9 +11,9 @@
 
 package alluxio.proxy.s3.signature;
 
-import static alluxio.proxy.s3.S3Constants.S3_SIGN_SIGNATURE;
-import static alluxio.proxy.s3.S3Constants.S3_SIGN_CONTENT_SHA256;
 import static alluxio.proxy.s3.S3Constants.AUTHORIZATION_CHARSET;
+import static alluxio.proxy.s3.S3Constants.S3_SIGN_CONTENT_SHA256;
+import static alluxio.proxy.s3.S3Constants.S3_SIGN_SIGNATURE;
 import static alluxio.proxy.s3.S3Constants.TIME_FORMATTER;
 
 import alluxio.proxy.s3.S3ErrorCode;
@@ -24,7 +24,6 @@ import org.apache.kerby.util.Hex;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.ws.rs.container.ContainerRequestContext;
 import java.io.UnsupportedEncodingException;
 import java.net.InetAddress;
 import java.net.URI;
@@ -34,14 +33,20 @@ import java.net.UnknownHostException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.StringJoiner;
+import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.time.temporal.ChronoUnit;
+import java.util.stream.Collectors;
+import javax.servlet.http.HttpServletRequest;
+import javax.ws.rs.container.ContainerRequestContext;
 
 /**
  * Stateless utility to create stringToSign, the base of the signature.
@@ -81,6 +86,26 @@ public final class StringToSignProducer {
         S3RestUtils.fromMultiValueToSingleValueMap(context.getHeaders(), true),
         S3RestUtils.fromMultiValueToSingleValueMap(
             context.getUriInfo().getQueryParameters(), false));
+  }
+
+  /**
+   * Convert signature info to strToSign.
+   *
+   * @param signatureInfo
+   * @param request
+   * @return signature string
+   * @throws Exception
+   */
+  public static String createSignatureBase(
+      SignatureInfo signatureInfo,
+      HttpServletRequest request
+  ) throws Exception {
+    return createSignatureBase(signatureInfo,
+        request.getScheme(),
+        request.getMethod(),
+        request.getRequestURI(),
+        getHeaders(request),
+        getParameterMap(request));
   }
 
   /**
@@ -140,6 +165,36 @@ public final class StringToSignProducer {
   }
 
   /**
+   * Get all headers by given http request, and the result map will ignore case.
+   * @param request
+   * @return
+   */
+  private static Map<String, String> getHeaders(HttpServletRequest request) {
+    Map<String, String> result = new TreeMap<>(String::compareToIgnoreCase);
+    Enumeration<String> headerNames = request.getHeaderNames();
+    if (headerNames != null) {
+      while (headerNames.hasMoreElements()) {
+        String name = headerNames.nextElement();
+        String value = request.getHeader(name);
+        result.put(name, value);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Get all parameters by given http request,
+   * if there are multiple values for the same key, the first one will be taken.
+   * @param request
+   * @return
+   */
+  private static Map<String, String> getParameterMap(HttpServletRequest request) {
+    return request.getParameterMap().entrySet()
+        .stream()
+        .collect(Collectors.toMap(Entry::getKey, e -> e.getValue()[0]));
+  }
+
+  /**
    * Compute a hash for provided string.
    * @param payload
    * @return hashed string
@@ -175,7 +230,6 @@ public final class StringToSignProducer {
     String canonicalUri = getCanonicalUri("/", uri);
 
     String canonicalQueryStr = getQueryParamString(queryParams);
-    System.out.println(canonicalQueryStr);
 
     StringBuilder canonicalHeaders = new StringBuilder();
 

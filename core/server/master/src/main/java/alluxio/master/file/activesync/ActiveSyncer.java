@@ -13,8 +13,8 @@ package alluxio.master.file.activesync;
 
 import alluxio.AlluxioURI;
 import alluxio.SyncInfo;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
+import alluxio.conf.PropertyKey;
 import alluxio.heartbeat.HeartbeatExecutor;
 import alluxio.master.file.FileSystemMaster;
 import alluxio.master.file.meta.MountTable;
@@ -74,7 +74,7 @@ public class ActiveSyncer implements HeartbeatExecutor {
   }
 
   @Override
-  public void heartbeat() {
+  public void heartbeat(long timeLimitMs) {
     LOG.debug("start sync heartbeat for {} with mount id {}", mMountUri, mMountId);
     // Remove any previously completed sync tasks
     mSyncTasks.removeIf(Future::isDone);

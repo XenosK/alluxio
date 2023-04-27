@@ -21,8 +21,8 @@ import alluxio.client.file.FileSystemContext;
 import alluxio.client.file.FileSystemContextReinitializer;
 import alluxio.client.meta.MetaMasterConfigClient;
 import alluxio.client.meta.RetryHandlingMetaMasterConfigClient;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
+import alluxio.conf.PropertyKey;
 import alluxio.grpc.CreateFilePOptions;
 import alluxio.master.MasterClientContext;
 import alluxio.resource.CloseableResource;
@@ -139,7 +139,7 @@ public final class FileSystemContextReinitIntegrationTest extends BaseIntegratio
 
       ExecutorService service = Executors.newSingleThreadExecutor();
       Future future = service.submit(() -> {
-        mExecutor.heartbeat();
+        mExecutor.heartbeat(Long.MAX_VALUE);
       });
       TimeUnit.SECONDS.sleep(1);
       // Stream is open, so reinitialization should block until the stream is closed.
@@ -159,7 +159,7 @@ public final class FileSystemContextReinitIntegrationTest extends BaseIntegratio
    * Triggers ConfigHashSync heartbeat and waits for it to finish.
    */
   private void triggerAndWaitSync() throws Exception {
-    mExecutor.heartbeat();
+    mExecutor.heartbeat(Long.MAX_VALUE);
   }
 
   private void restartMasters() throws Exception {
@@ -203,10 +203,10 @@ public final class FileSystemContextReinitIntegrationTest extends BaseIntegratio
     // Use Equals and NotEquals so that when test fails, the hashes are printed out for comparison.
     if (clusterConfHashUpdated) {
       Assert.assertNotEquals(mClusterConfHash,
-          mContext.getClientContext().getClusterConf().hash());
+          mContext.getClientContext().getClusterConfHash());
     } else {
       Assert.assertEquals(mClusterConfHash,
-          mContext.getClientContext().getClusterConf().hash());
+          mContext.getClientContext().getClusterConfHash());
     }
 
     if (pathConfHashUpdated) {
@@ -219,7 +219,7 @@ public final class FileSystemContextReinitIntegrationTest extends BaseIntegratio
   }
 
   private void updateHash() {
-    mClusterConfHash = mContext.getClientContext().getClusterConf().hash();
+    mClusterConfHash = mContext.getClientContext().getClusterConfHash();
     mPathConfHash = mContext.getClientContext().getPathConfHash();
   }
 }

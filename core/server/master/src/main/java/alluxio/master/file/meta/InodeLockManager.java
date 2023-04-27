@@ -13,8 +13,8 @@ package alluxio.master.file.meta;
 
 import alluxio.collections.LockPool;
 import alluxio.concurrent.LockMode;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
+import alluxio.conf.PropertyKey;
 import alluxio.metrics.MetricKey;
 import alluxio.metrics.MetricsSystem;
 import alluxio.resource.LockResource;
@@ -161,6 +161,17 @@ public class InodeLockManager implements Closeable {
    */
   public RWLockResource lockInode(InodeView inode, LockMode mode, boolean useTryLock) {
     return mInodeLocks.get(inode.getId(), mode, useTryLock);
+  }
+
+  /**
+   * Acquires an inode lock using {@link Lock#lock()}.
+   *
+   * @param inodeId the inode id of the inode to lock
+   * @param mode the mode to lock in
+   * @return a lock resource which must be closed to release the lock
+   */
+  public RWLockResource lockInode(Long inodeId, LockMode mode) {
+    return mInodeLocks.get(inodeId, mode, false);
   }
 
   /**

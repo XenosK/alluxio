@@ -21,8 +21,8 @@ import static org.mockito.Mockito.when;
 
 import alluxio.client.file.FileSystem;
 import alluxio.client.file.FileSystemContext;
-import alluxio.conf.PropertyKey;
 import alluxio.conf.Configuration;
+import alluxio.conf.PropertyKey;
 import alluxio.exception.ExceptionMessage;
 import alluxio.exception.JobDoesNotExistException;
 import alluxio.exception.status.ResourceExhaustedException;
@@ -37,6 +37,7 @@ import alluxio.job.plan.PlanConfig;
 import alluxio.job.wire.JobInfo;
 import alluxio.job.wire.Status;
 import alluxio.job.workflow.composite.CompositeConfig;
+import alluxio.master.AlwaysStandbyPrimarySelector;
 import alluxio.master.MasterContext;
 import alluxio.master.NoopUfsManager;
 import alluxio.master.job.command.CommandManager;
@@ -79,7 +80,8 @@ public final class JobMasterTest {
     FileSystem fs = mock(FileSystem.class);
     when(FileSystem.Factory.create(any(FileSystemContext.class)))
             .thenReturn(fs);
-    mJobMaster = new JobMaster(new MasterContext<>(new NoopJournalSystem(), new NoopUfsManager()),
+    mJobMaster = new JobMaster(new MasterContext<>(new NoopJournalSystem(),
+        new AlwaysStandbyPrimarySelector(), new NoopUfsManager()),
         mock(FileSystem.class), mock(FileSystemContext.class), mock(UfsManager.class));
     mJobMaster.start(true);
   }
