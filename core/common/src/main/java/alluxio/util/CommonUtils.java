@@ -76,6 +76,9 @@ import javax.annotation.concurrent.ThreadSafe;
 public final class CommonUtils {
   private static final Logger LOG = LoggerFactory.getLogger(CommonUtils.class);
 
+  private static final String EARLY_ACCESS_SUFFIX = "-ea";
+  private static final String BETA_SUFFIX = "-beta";
+
   private static final String ALPHANUM =
       "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
   private static final Random RANDOM = new Random();
@@ -299,17 +302,25 @@ public final class CommonUtils {
    * @return the groups list that the {@code user} belongs to. The primary group is returned first
    */
   public static List<String> getUnixGroups(String user) throws IOException {
-    String result;
+    String effectiveGroupsResult;
+    String allGroupsResult;
     List<String> groups = new ArrayList<>();
     try {
-      result = ShellUtils.execCommand(ShellUtils.getGroupsForUserCommand(user));
+      effectiveGroupsResult = ShellUtils.execCommand(
+          ShellUtils.getEffectiveGroupsForUserCommand(user));
+      allGroupsResult = ShellUtils.execCommand(
+          ShellUtils.getAllGroupsForUserCommand(user));
     } catch (ExitCodeException e) {
       // if we didn't get the group - just return empty list
       LOG.warn("got exception trying to get groups for user {}: {}", user, e.toString());
       return groups;
     }
-
-    StringTokenizer tokenizer = new StringTokenizer(result, ShellUtils.TOKEN_SEPARATOR_REGEX);
+    StringTokenizer tokenizer = new StringTokenizer(
+        effectiveGroupsResult, ShellUtils.TOKEN_SEPARATOR_REGEX);
+    while (tokenizer.hasMoreTokens()) {
+      groups.add(tokenizer.nextToken());
+    }
+    tokenizer = new StringTokenizer(allGroupsResult, ShellUtils.TOKEN_SEPARATOR_REGEX);
     while (tokenizer.hasMoreTokens()) {
       groups.add(tokenizer.nextToken());
     }
@@ -874,6 +885,12 @@ public final class CommonUtils {
    * see https://www.oracle.com/java/technologies/javase/versioning-naming.html for reference
    */
   public static int parseMajorVersion(String version) {
+    if (version.endsWith(EARLY_ACCESS_SUFFIX)) {
+      version = version.substring(0, version.length() - EARLY_ACCESS_SUFFIX.length());
+    }
+    if (version.endsWith(BETA_SUFFIX)) {
+      version = version.substring(0, version.length() - BETA_SUFFIX.length());
+    }
     if (version.startsWith("1.")) {
       version = version.substring(2, 3);
     } else {

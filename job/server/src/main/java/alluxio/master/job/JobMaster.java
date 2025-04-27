@@ -211,7 +211,7 @@ public class JobMaster extends AbstractMaster implements NoopJournaled {
     mWorkerHealth = new ConcurrentHashMap<>();
 
     mCmdJobTracker = new CmdJobTracker(
-            fsContext, this);
+            fsContext, this, mPlanTracker);
 
     MetricsSystem.registerGaugeIfAbsent(
         MetricKey.MASTER_JOB_COUNT.getName(),
@@ -259,14 +259,17 @@ public class JobMaster extends AbstractMaster implements NoopJournaled {
               () -> new FixedIntervalSupplier(
                   Configuration.getMs(PropertyKey.JOB_MASTER_LOST_MASTER_INTERVAL)),
               Configuration.global(), mMasterContext.getUserState()));
-      if (Configuration.getBoolean(PropertyKey.MASTER_AUDIT_LOGGING_ENABLED)) {
-        mAsyncAuditLogWriter = new AsyncUserAccessAuditLogWriter("JOB_MASTER_AUDIT_LOG");
-        mAsyncAuditLogWriter.start();
-        MetricsSystem.registerGaugeIfAbsent(
-            MetricKey.MASTER_AUDIT_LOG_ENTRIES_SIZE.getName(),
-            () -> mAsyncAuditLogWriter != null
-                ? mAsyncAuditLogWriter.getAuditLogEntriesSize() : -1);
-      }
+      /**
+       * The audit logger will be running all the time, and an operation checks whether
+       * to enable audit logs in {@link #createAuditContext}. So audit log can be turned on/off
+       * at runtime by updating the property key.
+       */
+      mAsyncAuditLogWriter = new AsyncUserAccessAuditLogWriter("JOB_MASTER_AUDIT_LOG");
+      mAsyncAuditLogWriter.start();
+      MetricsSystem.registerGaugeIfAbsent(
+          MetricKey.MASTER_AUDIT_LOG_ENTRIES_SIZE.getName(),
+          () -> mAsyncAuditLogWriter != null
+              ? mAsyncAuditLogWriter.getAuditLogEntriesSize() : -1);
     } else {
       LOG.info("Starting job master as standby");
       if (ConfigurationUtils.isHaMode(Configuration.global())) {

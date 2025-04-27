@@ -159,19 +159,23 @@ public class MonoBlockStore implements BlockStore {
       boolean positionShort, Protocol.OpenUfsBlockOptions options)
       throws IOException {
     BlockReader reader;
-    Optional<? extends BlockMeta> blockMeta = mLocalBlockStore.getVolatileBlockMeta(blockId);
-    if (blockMeta.isPresent()) {
+    // first try reading from Alluxio cache
+    try {
       reader = mLocalBlockStore.createBlockReader(sessionId, blockId, offset);
       DefaultBlockWorker.Metrics.WORKER_ACTIVE_CLIENTS.inc();
-    } else {
+      return reader;
+    } catch (BlockDoesNotExistRuntimeException e) {
+      LOG.debug("Block {} does not exist in Alluxio cache: {}", blockId, e.getMessage());
+      // the block does not exist in Alluxio, try loading from UFS
       boolean checkUfs = options != null && (options.hasUfsPath() || options.getBlockInUfsTier());
       if (!checkUfs) {
-        throw new BlockDoesNotExistRuntimeException(blockId);
+        throw e;
       }
       // When the block does not exist in Alluxio but exists in UFS, try to open the UFS block.
       reader = createUfsBlockReader(sessionId, blockId, offset, positionShort, options);
+      DefaultBlockWorker.Metrics.WORKER_ACTIVE_CLIENTS.inc();
+      return reader;
     }
-    return reader;
   }
 
   @Override
@@ -188,13 +192,17 @@ public class MonoBlockStore implements BlockStore {
       return blockReader;
     } catch (Exception e) {
       try {
+        Optional<TempBlockMeta> tempBlockMeta = mLocalBlockStore.getTempBlockMeta(blockId);
+        if (tempBlockMeta.isPresent() && tempBlockMeta.get().getSessionId() == sessionId) {
+          abortBlock(sessionId, blockId);
+        }
         closeUfsBlock(sessionId, blockId);
       } catch (Exception ee) {
         LOG.warn("Failed to close UFS block", ee);
       }
       String errorMessage = format("Failed to read from UFS, sessionId=%d, "
               + "blockId=%d, offset=%d, positionShort=%s, options=%s: %s",
-          sessionId, blockId, offset, positionShort, options, e);
+          sessionId, blockId, offset, positionShort, options, e.toString());
       if (e instanceof FileNotFoundException) {
         throw new NotFoundException(errorMessage, e);
       }
@@ -206,16 +214,12 @@ public class MonoBlockStore implements BlockStore {
       throws IOException {
     try {
       mUnderFileSystemBlockStore.closeBlock(sessionId, blockId);
-      Optional<TempBlockMeta> tempBlockMeta = mLocalBlockStore.getTempBlockMeta(blockId);
-      if (tempBlockMeta.isPresent() && tempBlockMeta.get().getSessionId() == sessionId) {
-        commitBlock(sessionId, blockId, false);
-      } else {
+      if (!mLocalBlockStore.hasTempBlockMeta(blockId) && mUnderFileSystemBlockStore.isNoCache(
+          sessionId, blockId)) {
         // When getTempBlockMeta() return null, such as a block readType NO_CACHE writeType THROUGH.
         // Counter will not be decrement in the commitblock().
         // So we should decrement counter here.
-        if (mUnderFileSystemBlockStore.isNoCache(sessionId, blockId)) {
-          DefaultBlockWorker.Metrics.WORKER_ACTIVE_CLIENTS.dec();
-        }
+        Metrics.WORKER_ACTIVE_CLIENTS.dec();
       }
     } finally {
       mUnderFileSystemBlockStore.releaseAccess(sessionId, blockId);
@@ -323,7 +327,14 @@ public class MonoBlockStore implements BlockStore {
         handleException(e, block, errors, sessionId);
         continue;
       }
-      ByteBuffer buf = NioDirectBufferPool.acquire((int) blockSize);
+      ByteBuffer buf;
+      try {
+        buf = NioDirectBufferPool.acquire((int) blockSize,
+            new ExponentialBackoffRetry(1000, 5000, 5));
+      } catch (Exception e) {
+        handleException(e, block, errors, sessionId);
+        continue;
+      }
       CompletableFuture<Void> future = RetryUtils.retryCallable("read from ufs",
               () -> manager.read(buf, block.getOffsetInFile(), blockSize, blockId,
                   block.getUfsPath(), options),
@@ -339,12 +350,12 @@ public class MonoBlockStore implements BlockStore {
               blockWriter.close();
             } catch (IOException e) {
               throw AlluxioRuntimeException.from(e);
-            } finally {
-              NioDirectBufferPool.release(buf);
             }
           })
           .thenRun(() -> commitBlock(sessionId, blockId, false))
+          .thenRun(() -> NioDirectBufferPool.release(buf))
           .exceptionally(t -> {
+            NioDirectBufferPool.release(buf);
             handleException(t.getCause(), block, errors, sessionId);
             return null;
           });

@@ -11,6 +11,7 @@
 
 package alluxio;
 
+import java.util.regex.Pattern;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
@@ -79,6 +80,7 @@ public final class Constants {
   public static final String HEADER_WASB = "wasb://";
   public static final String HEADER_WASBS = "wasbs://";
   public static final String HEADER_OBS = "obs://";
+  public static final String HEADER_TOS = "tos://";
 
   public static final int MAX_PORT = 65535;
 
@@ -231,6 +233,14 @@ public final class Constants {
   public static final String MEDIUM_MEM = "MEM";
   public static final String MEDIUM_HDD = "HDD";
   public static final String MEDIUM_SSD = "SSD";
+
+  // Log file pattern
+  public static final Pattern LOG_FILE_PATTERN =
+      Pattern.compile(".*(\\.log|\\.out)(\\.[0-9-]+)?$|.*.txt|.*.json");
+
+  /* xAttr keys */
+  public static final String ETAG_XATTR_KEY = "s3_etag";
+  public static final String CRC64_KEY = "crc64";
 
   private Constants() {} // prevent instantiation
 }

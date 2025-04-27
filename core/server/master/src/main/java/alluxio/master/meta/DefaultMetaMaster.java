@@ -156,7 +156,7 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
   /** Path level properties. */
   private final PathProperties mPathProperties;
 
-  /** Persisted state for MetaMaster. */
+  /** Persisted state for {@link MetaMaster}. */
   private final State mState;
 
   /** Value to be used for the cluster ID when not assigned. */
@@ -169,7 +169,7 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
   private final JournalSpaceMonitor mJournalSpaceMonitor;
 
   /**
-   * Journaled state for MetaMaster.
+   * Journaled state for {@link MetaMaster}.
    */
   @NotThreadSafe
   public static final class State implements alluxio.master.journal.Journaled {
@@ -463,6 +463,7 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
       // NOTE(cc): assumes that Configuration is read-only when master is running, otherwise,
       // the following hash might not correspond to the above cluster configuration.
       builder.setClusterConfHash(Configuration.hash());
+      builder.setClusterConfLastUpdateTime(Configuration.getLastUpdateTime());
     }
 
     if (!options.getIgnorePathConf()) {
@@ -471,6 +472,7 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
           properties.forEach((key, value) ->
               builder.addPathProperty(path, key, value)));
       builder.setPathConfHash(pathProperties.getHash());
+      builder.setPathConfLastUpdateTime(pathProperties.getLastUpdateTime());
     }
 
     return builder.build();
@@ -478,7 +480,8 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
 
   @Override
   public ConfigHash getConfigHash() {
-    return new ConfigHash(Configuration.hash(), mPathProperties.hash());
+    return new ConfigHash(Configuration.hash(), mPathProperties.hash(),
+        Configuration.getLastUpdateTime(), mPathProperties.getLastUpdateTime());
   }
 
   @Override
@@ -624,6 +627,7 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
 
   @Override
   public MetaCommand masterHeartbeat(long masterId, MasterHeartbeatPOptions options) {
+    LOG.debug("A heartbeat request was received from Standby master: {}.", masterId);
     MasterInfo master = mMasters.getFirstByField(ID_INDEX, masterId);
     if (master == null) {
       LOG.warn("Could not find master id: {} for heartbeat.", masterId);
@@ -721,7 +725,7 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
   @Override
   public Map<String, Boolean> updateConfiguration(Map<String, String> propertiesMap) {
     Map<String, Boolean> result = new HashMap<>();
-    int successCount = 0;
+    Map<PropertyKey, Object> changedProperties = new HashMap<>();
     for (Map.Entry<String, String> entry : propertiesMap.entrySet()) {
       try {
         PropertyKey key = PropertyKey.fromString(entry.getKey());
@@ -731,7 +735,7 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
           Object value = key.parseValue(entry.getValue());
           Configuration.set(key, value, Source.RUNTIME);
           result.put(entry.getKey(), true);
-          successCount++;
+          changedProperties.put(key, Configuration.get(key));
           LOG.info("Property {} has been updated to \"{}\" from \"{}\"",
               key.getName(), entry.getValue(), oldValue);
         } else {
@@ -743,9 +747,10 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
         LOG.error("Failed to update property {} to {}", entry.getKey(), entry.getValue(), e);
       }
     }
-    LOG.debug("Update {} properties, succeed {}.", propertiesMap.size(), successCount);
-    if (successCount > 0) {
-      ReconfigurableRegistry.update();
+    LOG.debug("Updating {} properties, {} succeed.", propertiesMap.size(),
+        changedProperties.size());
+    if (changedProperties.size() > 0) {
+      ReconfigurableRegistry.update(changedProperties);
     }
     return result;
   }

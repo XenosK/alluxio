@@ -18,12 +18,10 @@ import alluxio.conf.PropertyKey;
 import alluxio.util.ThreadUtils;
 import alluxio.web.ProxyWebServer;
 
-import org.eclipse.jetty.server.Request;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import javax.servlet.AsyncContext;
 import javax.servlet.ServletException;
@@ -47,6 +45,10 @@ public class S3RequestServlet extends HttpServlet {
    * light-weighted metadata-centric requests and heavy io requests */
   public static final String PROXY_S3_V2_LIGHT_POOL = "Proxy S3 V2 Light Pool";
   public static final String PROXY_S3_V2_HEAVY_POOL = "Proxy S3 V2 Heavy Pool";
+  public static final boolean PROXY_V2_ASYNC_ENABLED =
+      Configuration.getBoolean(PropertyKey.PROXY_S3_V2_ASYNC_PROCESSING_ENABLED);
+  public static final long ASYNC_CONTEXT_TIMEOUT =
+      Configuration.getLong(PropertyKey.PROXY_S3_V2_ASYNC_CONTEXT_TIMEOUT_MS);
 
   /**
    * Implementation to serve the HttpServletRequest and returns HttpServletResponse.
@@ -76,17 +78,16 @@ public class S3RequestServlet extends HttpServlet {
       S3Handler.processResponse(response, errorResponse);
       return;
     }
-    ((ConcurrentHashMap<Request, S3Handler>) getServletContext()
-        .getAttribute(ProxyWebServer.PROXY_S3_HANDLER_MAP))
-        .put((Request) request, s3Handler);
+    request.setAttribute(ProxyWebServer.S3_HANDLER_ATTRIBUTE, s3Handler);
     // Handle request async
-    if (Configuration.getBoolean(PropertyKey.PROXY_S3_V2_ASYNC_PROCESSING_ENABLED)) {
+    if (PROXY_V2_ASYNC_ENABLED) {
       S3BaseTask.OpTag opTag = s3Handler.getS3Task().mOPType.getOpTag();
       ExecutorService es = (ExecutorService) (opTag == S3BaseTask.OpTag.LIGHT
           ? getServletContext().getAttribute(PROXY_S3_V2_LIGHT_POOL)
           : getServletContext().getAttribute(PROXY_S3_V2_HEAVY_POOL));
 
       final AsyncContext asyncCtx = request.startAsync();
+      asyncCtx.setTimeout(ASYNC_CONTEXT_TIMEOUT);
       final S3Handler s3HandlerAsync = s3Handler;
       es.submit(() -> {
         try {

@@ -12,6 +12,7 @@
 package alluxio.client.file.ufs;
 
 import alluxio.AlluxioURI;
+import alluxio.Constants;
 import alluxio.client.file.FileInStream;
 import alluxio.client.file.FileOutStream;
 import alluxio.client.file.FileSystem;
@@ -21,7 +22,9 @@ import alluxio.client.file.URIStatus;
 import alluxio.client.file.options.UfsFileSystemOptions;
 import alluxio.conf.AlluxioConfiguration;
 import alluxio.exception.AlluxioException;
+import alluxio.exception.FileDoesNotExistException;
 import alluxio.exception.runtime.AlluxioRuntimeException;
+import alluxio.grpc.CancelSyncMetadataPResponse;
 import alluxio.grpc.CheckAccessPOptions;
 import alluxio.grpc.CreateDirectoryPOptions;
 import alluxio.grpc.CreateFilePOptions;
@@ -30,6 +33,7 @@ import alluxio.grpc.ErrorType;
 import alluxio.grpc.ExistsPOptions;
 import alluxio.grpc.FreePOptions;
 import alluxio.grpc.GetStatusPOptions;
+import alluxio.grpc.GetSyncProgressPResponse;
 import alluxio.grpc.JobProgressReportFormat;
 import alluxio.grpc.ListStatusPOptions;
 import alluxio.grpc.ListStatusPartialPOptions;
@@ -40,6 +44,9 @@ import alluxio.grpc.ScheduleAsyncPersistencePOptions;
 import alluxio.grpc.SetAclAction;
 import alluxio.grpc.SetAclPOptions;
 import alluxio.grpc.SetAttributePOptions;
+import alluxio.grpc.SyncMetadataAsyncPResponse;
+import alluxio.grpc.SyncMetadataPOptions;
+import alluxio.grpc.SyncMetadataPResponse;
 import alluxio.grpc.UnmountPOptions;
 import alluxio.job.JobDescription;
 import alluxio.job.JobRequest;
@@ -74,6 +81,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -416,6 +424,30 @@ public class UfsBaseFileSystem implements FileSystem {
     throw new UnsupportedOperationException();
   }
 
+  @Override
+  public SyncMetadataPResponse syncMetadata(AlluxioURI path, SyncMetadataPOptions options)
+      throws FileDoesNotExistException, IOException, AlluxioException {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public SyncMetadataAsyncPResponse syncMetadataAsync(AlluxioURI path, SyncMetadataPOptions options)
+      throws FileDoesNotExistException, IOException, AlluxioException {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public GetSyncProgressPResponse getSyncProgress(long taskGroupId)
+      throws FileDoesNotExistException, IOException, AlluxioException {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public CancelSyncMetadataPResponse cancelSyncMetadata(long taskGroupId)
+      throws IOException, AlluxioException {
+    throw new UnsupportedOperationException();
+  }
+
   /**
    * Transform UFS file/directory status to client-side status.
    *
@@ -446,6 +478,10 @@ public class UfsBaseFileSystem implements FileSystem {
       info.setUfsFingerprint(
           Fingerprint.create(mUfs.get().getUnderFSType(), ufsStatus, fileStatus.getContentHash())
                      .serialize());
+      if (info.getXAttr() == null) {
+        info.setXAttr(new HashMap<String, byte[]>());
+      }
+      info.getXAttr().put(Constants.ETAG_XATTR_KEY, fileStatus.getContentHash().getBytes());
     }
     else {
       info.setLength(0);

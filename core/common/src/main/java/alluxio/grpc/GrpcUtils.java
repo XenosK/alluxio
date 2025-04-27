@@ -15,6 +15,7 @@ import static alluxio.util.StreamUtils.map;
 
 import alluxio.Constants;
 import alluxio.file.options.DescendantType;
+import alluxio.file.options.DirectoryLoadType;
 import alluxio.proto.journal.File;
 import alluxio.security.authorization.AccessControlList;
 import alluxio.security.authorization.AclAction;
@@ -230,6 +231,25 @@ public final class GrpcUtils {
   /**
    * Converts a proto type to a wire type.
    *
+   * @param pDirectoryLoadType the proto representation of a directory load type
+   * @return the wire representation of the directory load type
+   */
+  public static DirectoryLoadType fromProto(alluxio.grpc.DirectoryLoadPType pDirectoryLoadType) {
+    switch (pDirectoryLoadType) {
+      case SINGLE_LISTING:
+        return DirectoryLoadType.SINGLE_LISTING;
+      case BFS:
+        return DirectoryLoadType.BFS;
+      case DFS:
+        return DirectoryLoadType.DFS;
+      default:
+        throw new IllegalStateException("Unknown DirectoryLoadType: " + pDirectoryLoadType);
+    }
+  }
+
+  /**
+   * Converts a proto type to a wire type.
+   *
    * @param pInfo the proto representation of a file information
    * @return wire representation of the file information
    */
@@ -329,7 +349,8 @@ public final class GrpcUtils {
         .setUsedBytes(workerInfo.getUsedBytes())
         .setUsedBytesOnTiers(workerInfo.getUsedBytesOnTiersMap())
         .setVersion(workerInfo.getBuildVersion().getVersion())
-        .setRevision(workerInfo.getBuildVersion().getRevision());
+        .setRevision(workerInfo.getBuildVersion().getRevision())
+        .setNumVCpu(workerInfo.getNumVCpu());
   }
 
   /**
@@ -609,7 +630,8 @@ public final class GrpcUtils {
         .putAllCapacityBytesOnTiers(workerInfo.getCapacityBytesOnTiers())
         .putAllUsedBytesOnTiers(workerInfo.getUsedBytesOnTiers())
         .setBuildVersion(BuildVersion.newBuilder().setVersion(workerInfo.getVersion())
-            .setRevision(workerInfo.getRevision()))
+        .setRevision(workerInfo.getRevision()))
+        .setNumVCpu(workerInfo.getNumVCpu())
         .build();
   }
 

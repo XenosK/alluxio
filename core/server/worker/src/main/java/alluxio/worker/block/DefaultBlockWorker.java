@@ -28,10 +28,12 @@ import alluxio.conf.Source;
 import alluxio.exception.AlluxioException;
 import alluxio.exception.ExceptionMessage;
 import alluxio.exception.runtime.AlluxioRuntimeException;
+import alluxio.exception.runtime.BlockDoesNotExistRuntimeException;
 import alluxio.exception.runtime.ResourceExhaustedRuntimeException;
 import alluxio.exception.status.AlluxioStatusException;
 import alluxio.grpc.AsyncCacheRequest;
 import alluxio.grpc.Block;
+import alluxio.grpc.BlockChecksum;
 import alluxio.grpc.BlockStatus;
 import alluxio.grpc.CacheRequest;
 import alluxio.grpc.GetConfigurationPOptions;
@@ -45,9 +47,11 @@ import alluxio.heartbeat.HeartbeatThread;
 import alluxio.metrics.MetricInfo;
 import alluxio.metrics.MetricKey;
 import alluxio.metrics.MetricsSystem;
+import alluxio.network.protocol.databuffer.NioHeapBufferPool;
 import alluxio.proto.dataserver.Protocol;
 import alluxio.retry.RetryUtils;
 import alluxio.security.user.ServerUserState;
+import alluxio.util.CRC64;
 import alluxio.util.executor.ExecutorServiceFactories;
 import alluxio.util.io.FileUtils;
 import alluxio.wire.FileInfo;
@@ -60,23 +64,33 @@ import alluxio.worker.file.FileSystemMasterClient;
 import alluxio.worker.grpc.GrpcExecutors;
 import alluxio.worker.page.PagedBlockStore;
 
+import com.codahale.metrics.CachedGauge;
 import com.codahale.metrics.Counter;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.io.Closer;
+import com.google.common.util.concurrent.RateLimiter;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.annotation.concurrent.NotThreadSafe;
 import javax.annotation.concurrent.ThreadSafe;
@@ -93,6 +107,7 @@ import javax.annotation.concurrent.ThreadSafe;
 @NotThreadSafe
 public class DefaultBlockWorker extends AbstractWorker implements BlockWorker {
   private static final Logger LOG = LoggerFactory.getLogger(DefaultBlockWorker.class);
+  public static final int CACHEGAUGE_UPDATE_INTERVAL = 5000;
 
   /** Used to close resources during stop. */
   protected final Closer mResourceCloser = Closer.create();
@@ -125,6 +140,9 @@ public class DefaultBlockWorker extends AbstractWorker implements BlockWorker {
   private final FuseManager mFuseManager;
 
   protected WorkerNetAddress mAddress;
+  private final ExecutorService mChecksumCalculationThreadPool;
+  private final Optional<RateLimiter> mChecksumCalculationRateLimiter;
+  private final boolean mChecksumCalculationUsingBufferPool;
 
   /**
    * Constructs a default block worker.
@@ -160,7 +178,22 @@ public class DefaultBlockWorker extends AbstractWorker implements BlockWorker {
         GrpcExecutors.CACHE_MANAGER_EXECUTOR, this, fsContext);
     mFuseManager = mResourceCloser.register(new FuseManager(fsContext));
     mWhitelist = new PrefixList(Configuration.getList(PropertyKey.WORKER_WHITELIST));
-
+    mChecksumCalculationThreadPool = ExecutorServiceFactories.fixedThreadPool(
+        "checksum-calculation-pool",
+        Configuration.getInt(PropertyKey.WORKER_BLOCK_CHECKSUM_CALCULATION_THREAD_POOL_SIZE))
+        .create();
+    long checksumThroughputThreshold =
+        Configuration.getBytes(PropertyKey.WORKER_BLOCK_CHECKSUM_CALCULATION_THROUGHPUT_THRESHOLD);
+    if (checksumThroughputThreshold <= 0) {
+      mChecksumCalculationRateLimiter = Optional.empty();
+    } else {
+      // The min precision is 1kb to avoid data overflow
+      mChecksumCalculationRateLimiter =
+          Optional.of(RateLimiter.create(
+              Math.max(Math.toIntExact(checksumThroughputThreshold / 1024), 1)));
+    }
+    mChecksumCalculationUsingBufferPool =
+        Configuration.getBoolean(PropertyKey.WORKER_BLOCK_CHECKSUM_CALCULATION_USE_BUFFER_POOL);
     Metrics.registerGauges(this);
   }
 
@@ -500,8 +533,8 @@ public class DefaultBlockWorker extends AbstractWorker implements BlockWorker {
       // NOTE(cc): assumes that Configuration is read-only when master is running, otherwise,
       // the following hash might not correspond to the above cluster configuration.
       builder.setClusterConfHash(Configuration.hash());
+      builder.setClusterConfLastUpdateTime(Configuration.getLastUpdateTime());
     }
-
     return builder.build();
   }
 
@@ -520,45 +553,54 @@ public class DefaultBlockWorker extends AbstractWorker implements BlockWorker {
   public static final class Metrics {
     public static final Counter WORKER_ACTIVE_CLIENTS =
         MetricsSystem.counter(MetricKey.WORKER_ACTIVE_CLIENTS.getName());
+    public static final Counter WORKER_ACTIVE_OPERATIONS =
+        MetricsSystem.counter(MetricKey.WORKER_ACTIVE_OPERATIONS.getName());
 
     /**
      * Registers metric gauges.
      *
-     * @param blockWorker the block worker handle
+     * @param blockWorker the BlockWorker
      */
     public static void registerGauges(final BlockWorker blockWorker) {
-      MetricsSystem.registerGaugeIfAbsent(
+      CachedGauge<BlockWorkerMetrics> cache =
+          new CachedGauge<BlockWorkerMetrics>(CACHEGAUGE_UPDATE_INTERVAL, TimeUnit.MILLISECONDS) {
+            @Override
+            protected BlockWorkerMetrics loadValue() {
+              BlockStoreMeta meta = blockWorker.getStoreMetaFull();
+              BlockWorkerMetrics metrics = BlockWorkerMetrics.from(meta, WORKER_STORAGE_TIER_ASSOC);
+              return metrics;
+            }
+          };
+      MetricsSystem.registerCachedGaugeIfAbsent(
           MetricsSystem.getMetricName(MetricKey.WORKER_CAPACITY_TOTAL.getName()),
-          () -> blockWorker.getStoreMeta().getCapacityBytes());
+          () -> cache.getValue().getCapacityBytes());
 
-      MetricsSystem.registerGaugeIfAbsent(
+      MetricsSystem.registerCachedGaugeIfAbsent(
           MetricsSystem.getMetricName(MetricKey.WORKER_CAPACITY_USED.getName()),
-          () -> blockWorker.getStoreMeta().getUsedBytes());
+          () -> cache.getValue().getUsedBytes());
 
-      MetricsSystem.registerGaugeIfAbsent(
+      MetricsSystem.registerCachedGaugeIfAbsent(
           MetricsSystem.getMetricName(MetricKey.WORKER_CAPACITY_FREE.getName()),
-          () -> blockWorker.getStoreMeta().getCapacityBytes() - blockWorker.getStoreMeta()
-                      .getUsedBytes());
+          () -> cache.getValue().getCapacityFree());
 
       for (int i = 0; i < WORKER_STORAGE_TIER_ASSOC.size(); i++) {
         String tier = WORKER_STORAGE_TIER_ASSOC.getAlias(i);
         // TODO(lu) Add template to dynamically generate MetricKey
         MetricsSystem.registerGaugeIfAbsent(MetricsSystem.getMetricName(
             MetricKey.WORKER_CAPACITY_TOTAL.getName() + MetricInfo.TIER + tier),
-            () -> blockWorker.getStoreMeta().getCapacityBytesOnTiers().getOrDefault(tier, 0L));
+            () -> cache.getValue().getCapacityBytesOnTiers().getOrDefault(tier, 0L));
 
-        MetricsSystem.registerGaugeIfAbsent(MetricsSystem.getMetricName(
+        MetricsSystem.registerCachedGaugeIfAbsent(MetricsSystem.getMetricName(
             MetricKey.WORKER_CAPACITY_USED.getName() + MetricInfo.TIER + tier),
-            () -> blockWorker.getStoreMeta().getUsedBytesOnTiers().getOrDefault(tier, 0L));
+            () -> cache.getValue().getUsedBytesOnTiers().getOrDefault(tier, 0L));
 
-        MetricsSystem.registerGaugeIfAbsent(MetricsSystem.getMetricName(
+        MetricsSystem.registerCachedGaugeIfAbsent(MetricsSystem.getMetricName(
             MetricKey.WORKER_CAPACITY_FREE.getName() + MetricInfo.TIER + tier),
-            () -> blockWorker.getStoreMeta().getCapacityBytesOnTiers().getOrDefault(tier, 0L)
-                - blockWorker.getStoreMeta().getUsedBytesOnTiers().getOrDefault(tier, 0L));
+            () -> cache.getValue().getFreeBytesOnTiers().getOrDefault(tier, 0L));
       }
-      MetricsSystem.registerGaugeIfAbsent(MetricsSystem.getMetricName(
+      MetricsSystem.registerCachedGaugeIfAbsent(MetricsSystem.getMetricName(
           MetricKey.WORKER_BLOCKS_CACHED.getName()),
-          () -> blockWorker.getStoreMetaFull().getNumberOfBlocks());
+          () -> cache.getValue().getNumberOfBlocks());
     }
 
     private Metrics() {} // prevent instantiation
@@ -585,5 +627,61 @@ public class DefaultBlockWorker extends AbstractWorker implements BlockWorker {
     public void close() {
       // Nothing to clean up
     }
+  }
+
+  @Override
+  public Map<Long, BlockChecksum> calculateBlockChecksum(List<Long> blockIds) {
+    int chunkSize = 1024 * 1024 * 8; //8MB
+    HashMap<Long, BlockChecksum> result = new HashMap<>();
+    List<Future<?>> futures = new ArrayList<>();
+    for (long blockId : blockIds) {
+      Future<?> future = mChecksumCalculationThreadPool.submit(() -> {
+        ByteBuffer bf = null;
+        try (BlockReader br = mBlockStore.createBlockReader(
+            Sessions.WORKER_CHECKSUM_CHECK_SESSION_ID,
+            blockId, 0, false, Protocol.OpenUfsBlockOptions.getDefaultInstance())) {
+          CRC64 crc64 = new CRC64();
+          if (mChecksumCalculationUsingBufferPool) {
+            bf = NioHeapBufferPool.acquire(chunkSize);
+          } else {
+            bf = ByteBuffer.allocate(chunkSize);
+          }
+          ByteBuf bb = Unpooled.wrappedBuffer(bf);
+          while (true) {
+            bb.clear();
+            long bytesRead = br.transferTo(bb);
+            if (bytesRead < 0) {
+              break;
+            }
+            crc64.update(bf.array(), Math.toIntExact(bytesRead));
+            int permits = Math.toIntExact(Math.max(1, bytesRead / 1024));
+            if (mChecksumCalculationRateLimiter.isPresent()) {
+              mChecksumCalculationRateLimiter.get().acquire(permits);
+            }
+          }
+          result.put(blockId,
+              BlockChecksum.newBuilder()
+                  .setBlockId(blockId).setBlockLength(br.getLength())
+                  .setChecksum(String.valueOf(crc64.getValue())).build());
+        } catch (BlockDoesNotExistRuntimeException e) {
+          LOG.warn("Block {} not found during CRC calculation", blockId);
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        } finally {
+          if (bf != null && mChecksumCalculationUsingBufferPool) {
+            NioHeapBufferPool.release(bf);
+          }
+        }
+      });
+      futures.add(future);
+    }
+    for (Future<?> future : futures) {
+      try {
+        future.get();
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+    }
+    return result;
   }
 }

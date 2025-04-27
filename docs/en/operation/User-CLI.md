@@ -488,10 +488,6 @@ Supplying neither flag will default to generating both docs.
 
 > Note: This command does not require the Alluxio cluster to be running.
 
-### table
-
-See [Table Operations](#table-operations).
-
 ### version
 
 The `version` command prints Alluxio version.
@@ -847,102 +843,11 @@ Please wait for command submission to finish..
 Submitted migrate job successfully, jobControlId = JOB_CONTROL_ID_2
 ```
 
-### distributedLoad
-
-The `distributedLoad` command loads a file or directory from the under storage system into Alluxio storage distributed
-across workers using the job service. The job is a no-op if the file is already loaded into Alluxio.
-By default, the command runs synchronously and the user will get a `JOB_CONTROL_ID` after the command successfully submits the job to be executed.
-The command will wait until the job is complete, at which point the user will see the list of files loaded and statistics on which files completed or failed.
-The command can also run in async mode with the `--async` flag. Similar to before, the user will get a `JOB_CONTROL_ID` after the command successfully submits the job.
-The difference is that the command will not wait for the job to finish.
-Users can use the [`getCmdStatus`](#getCmdStatus) command with the `JOB_CONTROL_ID` as an argument to check detailed status information about the job.
-
-If `distributedLoad` is run on a directory, files in the directory will be recursively loaded and each file will be loaded
-on a random worker.
-
-Options:
-
-* `--replication`: Specifies how many workers to load each file into. The default value is `1`.
-* `--active-jobs`: Limits how many jobs can be submitted to the Alluxio job service at the same time.
-Later jobs must wait until some earlier jobs to finish. The default value is `3000`.
-A lower value means slower execution but also being nicer to the other users of the job service.
-* `--batch-size`: Specifies how many files to be batched into one request. The default value is `20`. Notice that if some task failed in the batched job, the whole batched job would fail with some completed tasks and some failed tasks.
-* `--host-file <host-file>`: Specifies a file contains worker hosts to load target data, each line has a worker host.
-* `--hosts`: Specifies a list of worker hosts separated by comma to load target data.
-* `--excluded-host-file <host-file>`: Specifies a file contains worker hosts which shouldn't load target data, each line has a worker host.
-* `--excluded-hosts`: Specifies a list of worker hosts separated by comma which shouldn't load target data.
-* `--locality-file <locality-file>`: Specifies a file contains worker locality to load target data, each line has a locality.
-* `--locality`: Specifies a list of worker locality separated by comma to load target data.
-* `--excluded-locality-file <locality-file>`: Specifies a file contains worker locality which shouldn't load target data, each line has a worker locality.
-* `--excluded-locality`: Specifies a list of worker locality separated by comma which shouldn't load target data.
-* `--index`: Specifies a file that lists all files to be loaded
-* `--passive-cache`: Specifies using direct cache request or passive cache with read(old implementation)
-* `--async`: Specifies whether to wait for command execution to finish. If not explicitly shown then default to run synchronously.
-
-```console
-$ ./bin/alluxio fs distributedLoad --replication 2 --active-jobs 2000 /data/today
-Sample Output:
-Please wait for command submission to finish..
-Submitted successfully, jobControlId = JOB_CONTROL_ID_3
-Waiting for the command to finish ...
-Get command status information below:
-Successfully loaded path /data/today/$FILE_PATH_1
-Successfully loaded path /data/today/$FILE_PATH_2
-Successfully loaded path /data/today/$FILE_PATH_3
-Total completed file count is 3, failed file count is 0
-Finished running the command, jobControlId = JOB_CONTROL_ID_3
-```
-
-```console
-# Turn on async submission mode. Run this command to get JOB_CONTROL_ID, then use getCmdStatus to check command detailed status.
-$ ./bin/alluxio fs distributedLoad /data/today --async
-Sample Output:
-Entering async submission mode.
-Please wait for command submission to finish..
-Submitted distLoad job successfully, jobControlId = JOB_CONTROL_ID_4
-```
-
-Or you can include some workers or exclude some workers by using options `--host-file <host-file>`, `--hosts`, `--excluded-host-file <host-file>`,
-`--excluded-hosts`, `--locality-file <locality-file>`, `--locality`, `--excluded-host-file <host-file>` and `--excluded-locality`.
-
-Note: Do not use `--host-file <host-file>`, `--hosts`, `--locality-file <locality-file>`, `--locality` with
-`--excluded-host-file <host-file>`, `--excluded-hosts`, `--excluded-host-file <host-file>`, `--excluded-locality` together.
-
-```console
-# Only include host1 and host2
-$ ./bin/alluxio fs distributedLoad /data/today --hosts host1,host2
-# Only include the workset from host file /tmp/hostfile
-$ ./bin/alluxio fs distributedLoad /data/today --host-file /tmp/hostfile
-# Include all workers except host1 and host2 
-$ ./bin/alluxio fs distributedLoad /data/today --excluded-hosts host1,host2
-# Include all workers except the workerset in the excluded host file /tmp/hostfile-exclude
-$ ./bin/alluxio fs distributedLoad /data/today --excluded-file /tmp/hostfile-exclude
-# Include workers which's locality identify belong to ROCK1 or ROCK2
-$ ./bin/alluxio fs distributedLoad /data/today --locality ROCK1,ROCK2
-# Include workers which's locality identify belong to the localities in the locality file
-$ ./bin/alluxio fs distributedLoad /data/today --locality-file /tmp/localityfile
-# Include all workers except which's locality belong to ROCK1 or ROCK2 
-$ ./bin/alluxio fs distributedLoad /data/today --excluded-locality ROCK1,ROCK2
-# Include all workers except which's locality belong to the localities in the excluded locality file
-$ ./bin/alluxio fs distributedLoad /data/today --excluded-locality-file /tmp/localityfile-exclude
-
-# Conflict cases
-# The `--hosts` and `--locality` are `OR` relationship, so host2,host3 and workers in ROCK2,ROCKS3 will be included.
-$ ./bin/alluxio fs distributedLoad /data/today --locality ROCK2,ROCK3 --hosts host2,host3
-# The `--excluded-hosts` and `--excluded-locality` are `OR` relationship, so host2,host3 and workers in ROCK2,ROCKS3 will be excluded.
-$ ./bin/alluxio fs distributedLoad /data/today --excluded-hosts host2,host3 --excluded-locality ROCK2,ROCK3
-```
-
-### distributedMv
-
-The `distributedMv` command moves a file or directory in the Alluxio file system distributed across workers
-using the job service.
-
-If the source designates a directory, `distributedMv` moves the entire subtree at source to the destination.
-
-```console
-$ ./bin/alluxio fs distributedMv /data/1023 /data/1024
-```
+Please note below are known limitations for the distributed copy command.
+- Limited Scalability: No more than 1 million total number of files should be moved concurrently. Note that a copy job may stay active for a short period after the last file is copied.
+- Manual Integrity Validation: Verification between source and destination files relies on the response code from the underlying data lake storage. In case the response code is unreliable, we recommend manual verification of source and destination checksums.
+- Manual Cleanup: In certain failure scenarios, a user may need to manually remove partially written contents in destination directories and restart the failed jobs.
+- Limited Observability: Status checks are limited to using the command line for each job individually.
 
 ### du
 
@@ -1153,6 +1058,9 @@ $ ./bin/alluxio fs load <path> --local
 
 The `loadMetadata` command loads metadata about a path in the UFS to Alluxio.
 No data will be transferred.
+
+#### loadMetadata V1(legacy)
+
 This command is a client-side optimization without storing all returned `ls` results, preventing OOM for massive amount of small files.
 This is useful when data has been added to the UFS outside of Alluxio and users are expected to reference the new data.
 This command is more efficient than using the `ls` command since it does not store any directory or file information to be returned.
@@ -1166,6 +1074,39 @@ The -F option will force the loading of metadata even if there are existing meta
 ```console
 $ ./bin/alluxio fs loadMetadata -R -F <path>
 ```
+
+#### loadMetadata V2(new)
+
+The load metadata v2 is a better implementation of metadata sync that designs for object storage (e.g. s3),
+with better resource control and performance. 
+To use the v2 implementation, please attach the option `-v2` in your command. `-F` is no longer supported in v2. 
+The command will always load the metadata from UFS. If files are in alluxio already, they will be compared with and updated based on the UFS result. 
+The v2 implementation also has some unique options:
+```console
+$ ./bin/alluxio fs loadMetadata -v2 -R -d <type> -a <path>
+```
+
+Options:
+* `-d <type>` option that determines how alluxio will load metadata of subdirectories, if a recursive loading is required. Possible values:
+  * SINGLE_LISTING (default): Loads the file infos from UFS using a single listing. Use this mode if the directory does not contain or only contains few subdirectories. This mode gives you better reliability. This mode is only allowed on some object storage where single listing is allowed (e.g. ListObjectsV2 in s3).
+  * BFS: Loads the file infos on a directory basis; Creates a new job to load the subdirectory; Use this mode if your UFS directory contains many subdirectories. This mode loads the metadata for each subdirectory concurrently and gives you the best performance. Note that this is only an approximate BFS, as batches are processed and loaded concurrently and may be loaded in different orders.
+  * DFS: Loads the file infos directory by directory, in a DFS way.  Note that this is only an approximate DFS, as batches are processed and loaded concurrently and may be loaded in different orders.  
+* `-R` option recursively loads metadata in subdirectories
+* `-a/--async` If specified, the metadata loading states are pulled and printed every couple of seconds until the sync job is finished. Otherwise, the command line is blocked until the sync job is finished. Note that regardless this option is specified or not, the metadata sync task is processed asynchronously by alluxio master and this option only changes the behavior of display. Hence closing the terminal or CTRL+C do not cancel the sync job.  
+
+If `-a` is used, the console will print the task group id when the task is submitted. A task will be created for each mount point in the sync root.
+One can use the task group id to get the metadata load progress or cancel the load.
+
+To get the status a task group, use
+```console
+$ ./bin/alluxio fs loadMetadata -v2 -o get -id <task_group_id>
+```
+
+To cancel the task group, use
+```console
+$ ./bin/alluxio fs loadMetadata -v2 -o get -id <task_group_id>
+```
+
 
 ### location
 

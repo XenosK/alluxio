@@ -69,6 +69,7 @@ message WorkerInfo {
   map<string, int64> capacityBytesOnTiers = 8;
   map<string, int64> usedBytesOnTiers = 9;
   optional BuildVersion buildVersion = 10;
+  optional int32 numVCpu = 11;
 }
 
 enum WorkerRange {
@@ -91,6 +92,7 @@ enum WorkerInfoField {
   WORKER_USED_BYTES_ON_TIERS = 9;
   BLOCK_COUNT = 10;
   BUILD_VERSION = 11;
+  NUM_VCPU = 12;
 }
 
 message GetWorkerReportPOptions {
@@ -109,10 +111,11 @@ message WorkerLostStorageInfo {
   /** a map from tier alias to the lost storage paths */
   map<string, StorageList> lostStorage = 2;
 }
-message RemoveDecommissionedWorkerPOptions {
-  optional string workerName = 1;
+message RemoveDisabledWorkerPOptions {
+  required string workerHostname = 1;
+  optional int64 workerWebPort = 2;
 }
-message RemoveDecommissionedWorkerPResponse {}
+message RemoveDisabledWorkerPResponse {}
 
 message GetWorkerLostStoragePOptions {}
 message GetWorkerLostStoragePResponse {
@@ -121,7 +124,9 @@ message GetWorkerLostStoragePResponse {
 
 message DecommissionWorkerPResponse {}
 message DecommissionWorkerPOptions {
-  required string workerName = 1;
+  required string workerHostname = 1;
+  optional int64 workerWebPort = 2;
+  optional bool canRegisterAgain = 3;
 }
 
 /**
@@ -158,8 +163,8 @@ service BlockMasterClientService {
    * If target worker is in the decommissioned worker set,
    * return true, remove target worker from decommissioned worker set; else, return false.
    */
-  rpc RemoveDecommissionedWorker(RemoveDecommissionedWorkerPOptions)
-      returns (RemoveDecommissionedWorkerPResponse);
+  rpc RemoveDisabledWorker(RemoveDisabledWorkerPOptions)
+      returns (RemoveDisabledWorkerPResponse);
 
   /**
    * Returns a list of workers information for report CLI.
@@ -287,6 +292,7 @@ message RegisterWorkerPOptions {
   repeated grpc.ConfigProperty configs = 1;
   /** the worker version to display in info pages (useful for rolling upgrades) */
   optional BuildVersion buildVersion = 2;
+  optional int32 numVCpu = 3;
 }
 message RegisterWorkerPRequest {
   /** the id of the worker */

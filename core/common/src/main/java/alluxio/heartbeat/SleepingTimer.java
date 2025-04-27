@@ -11,14 +11,18 @@
 
 package alluxio.heartbeat;
 
+import alluxio.conf.PropertyKey;
+import alluxio.conf.Reconfigurable;
 import alluxio.time.Sleeper;
-import alluxio.time.ThreadSleeper;
+import alluxio.time.SteppingThreadSleeper;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Map;
+import java.util.Objects;
 import java.util.function.Supplier;
 import javax.annotation.concurrent.NotThreadSafe;
 
@@ -26,14 +30,14 @@ import javax.annotation.concurrent.NotThreadSafe;
  * This class can be used for executing heartbeats periodically.
  */
 @NotThreadSafe
-public class SleepingTimer implements HeartbeatTimer {
+public class SleepingTimer implements HeartbeatTimer, Reconfigurable {
   protected long mPreviousTickedMs = -1;
   private final String mThreadName;
   protected final Logger mLogger;
   protected final Clock mClock;
   protected final Sleeper mSleeper;
   protected final Supplier<SleepIntervalSupplier> mIntervalSupplierSupplier;
-  protected SleepIntervalSupplier mIntervalSupplier;
+  protected volatile SleepIntervalSupplier mIntervalSupplier;
 
   /**
    * Creates a new instance of {@link SleepingTimer}.
@@ -45,7 +49,7 @@ public class SleepingTimer implements HeartbeatTimer {
   public SleepingTimer(String threadName, Clock clock,
       Supplier<SleepIntervalSupplier> intervalSupplierSupplier) {
     this(threadName, LoggerFactory.getLogger(SleepingTimer.class),
-        clock, ThreadSleeper.INSTANCE, intervalSupplierSupplier);
+        clock, SteppingThreadSleeper.INSTANCE, intervalSupplierSupplier);
   }
 
   /**
@@ -74,17 +78,24 @@ public class SleepingTimer implements HeartbeatTimer {
    */
   @Override
   public long tick() throws InterruptedException {
-    long nextInterval = mIntervalSupplier.getNextInterval(mPreviousTickedMs, mClock.millis());
-    if (nextInterval > 0) {
-      mSleeper.sleep(Duration.ofMillis(nextInterval));
-    }
+    long now = mClock.millis();
+    mSleeper.sleep(
+        () -> Duration.ofMillis(mIntervalSupplier.getNextInterval(mPreviousTickedMs, now)));
     mPreviousTickedMs = mClock.millis();
     return mIntervalSupplier.getRunLimit(mPreviousTickedMs);
   }
 
   @Override
+  public void update(Map<PropertyKey, Object> changedProperties) {
+    update();
+  }
+
+  @Override
   public void update() {
-    mIntervalSupplier = mIntervalSupplierSupplier.get();
-    mLogger.info("update {} interval supplier.", mThreadName);
+    SleepIntervalSupplier newSupplier = mIntervalSupplierSupplier.get();
+    if (!Objects.equals(mIntervalSupplier, newSupplier)) {
+      mIntervalSupplier = newSupplier;
+      mLogger.info("update {} interval supplier.", mThreadName);
+    }
   }
 }

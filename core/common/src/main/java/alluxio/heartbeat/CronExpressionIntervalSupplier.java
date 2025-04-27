@@ -11,11 +11,13 @@
 
 package alluxio.heartbeat;
 
+import com.google.common.base.Preconditions;
 import org.apache.logging.log4j.core.util.CronExpression;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
+import java.util.Objects;
 
 /**
 * Calculate the next interval by given cron expression.
@@ -31,14 +33,15 @@ public class CronExpressionIntervalSupplier implements SleepIntervalSupplier {
    * @param fixedInterval the fixed interval
    */
   public CronExpressionIntervalSupplier(CronExpression cronExpression, long fixedInterval) {
+    Preconditions.checkNotNull(cronExpression, "CronExpression is null");
     mInterval = fixedInterval;
     mCron = cronExpression;
   }
 
   @Override
-  public long getNextInterval(long mPreviousTickedMs, long nowTimeStampMillis) {
+  public long getNextInterval(long previousTickedMs, long nowTimeStampMillis) {
     long nextInterval = 0;
-    long executionTimeMs = nowTimeStampMillis - mPreviousTickedMs;
+    long executionTimeMs = nowTimeStampMillis - previousTickedMs;
     if (executionTimeMs < mInterval) {
       nextInterval = mInterval - executionTimeMs;
     }
@@ -51,9 +54,27 @@ public class CronExpressionIntervalSupplier implements SleepIntervalSupplier {
   }
 
   @Override
-  public long getRunLimit(long mPreviousTickedMs) {
-    Date now = Date.from(Instant.ofEpochMilli(mPreviousTickedMs));
+  public long getRunLimit(long previousTickedMs) {
+    Date now = Date.from(Instant.ofEpochMilli(previousTickedMs));
     return Duration.between(now.toInstant(),
         mCron.getNextInvalidTimeAfter(now).toInstant()).toMillis();
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    CronExpressionIntervalSupplier that = (CronExpressionIntervalSupplier) o;
+    return mInterval == that.mInterval
+        && Objects.equals(mCron.getCronExpression(), that.mCron.getCronExpression());
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(mInterval, mCron.getCronExpression());
   }
 }

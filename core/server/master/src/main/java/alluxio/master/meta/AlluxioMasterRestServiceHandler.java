@@ -63,6 +63,7 @@ import alluxio.wire.AlluxioMasterInfo;
 import alluxio.wire.BlockLocation;
 import alluxio.wire.Capacity;
 import alluxio.wire.ConfigCheckReport;
+import alluxio.wire.ConfigHash;
 import alluxio.wire.FileBlockInfo;
 import alluxio.wire.FileInfo;
 import alluxio.wire.MasterInfo;
@@ -688,7 +689,8 @@ public final class AlluxioMasterRestServiceHandler {
       @DefaultValue("") @QueryParam("end") String requestEnd,
       @DefaultValue("20") @QueryParam("limit") String requestLimit) {
     return RestUtils.call(() -> {
-      FilenameFilter filenameFilter = (dir, name) -> name.toLowerCase().endsWith(".log");
+      FilenameFilter filenameFilter = (dir, name) ->
+          Constants.LOG_FILE_PATTERN.matcher(name.toLowerCase()).matches();
       MasterWebUILogs response = new MasterWebUILogs();
 
       if (!Configuration.getBoolean(PropertyKey.WEB_FILE_INFO_ENABLED)) {
@@ -816,12 +818,11 @@ public final class AlluxioMasterRestServiceHandler {
       MasterWebUIConfiguration response = new MasterWebUIConfiguration();
 
       response.setWhitelist(mFileSystemMaster.getWhiteList());
-
+      alluxio.wire.Configuration conf = mMetaMaster.getConfiguration(
+          GetConfigurationPOptions.newBuilder().setRawValue(true).build());
       TreeSet<Triple<String, String, String>> sortedProperties = new TreeSet<>();
       Set<String> alluxioConfExcludes = Sets.newHashSet(PropertyKey.MASTER_WHITELIST.toString());
-      for (ConfigProperty configProperty : mMetaMaster
-          .getConfiguration(GetConfigurationPOptions.newBuilder().setRawValue(true).build())
-          .toProto().getClusterConfigsList()) {
+      for (ConfigProperty configProperty : conf.toProto().getClusterConfigsList()) {
         String confName = configProperty.getName();
         if (!alluxioConfExcludes.contains(confName)) {
           sortedProperties.add(new ImmutableTriple<>(confName,
@@ -831,7 +832,8 @@ public final class AlluxioMasterRestServiceHandler {
       }
 
       response.setConfiguration(sortedProperties);
-
+      response.setConfigHash(new ConfigHash(conf.getClusterConfHash(), conf.getPathConfHash(),
+          conf.getClusterConfLastUpdateTime(), conf.getPathConfLastUpdateTime()));
       return response;
     }, Configuration.global());
   }
@@ -987,8 +989,11 @@ public final class AlluxioMasterRestServiceHandler {
           .setTotalBytesReadRemote(FormatUtils.getSizeFromBytes(bytesReadRemote))
           .setTotalBytesReadUfs(FormatUtils.getSizeFromBytes(bytesReadUfs));
 
+      Long bytesReadCache = counters.get(
+              MetricKey.CLUSTER_BYTES_READ_CACHE.getName()).getCount();
+
       // cluster cache hit and miss
-      long bytesReadTotal = bytesReadLocal + bytesReadRemote + bytesReadDomainSocket;
+      long bytesReadTotal = bytesReadLocal + bytesReadCache + bytesReadUfs;
       double cacheHitLocalPercentage =
           (bytesReadTotal > 0)
               ? (100D * (bytesReadLocal + bytesReadDomainSocket) / bytesReadTotal) : 0;

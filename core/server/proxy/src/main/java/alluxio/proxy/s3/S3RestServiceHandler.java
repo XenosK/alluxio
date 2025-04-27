@@ -56,6 +56,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
@@ -121,6 +122,10 @@ public final class S3RestServiceHandler {
           Configuration.global().getMs(PropertyKey.PROXY_S3_BUCKETPATHCACHE_TIMEOUT_MS),
           TimeUnit.MILLISECONDS)
       .build();
+  // Position read will consume additional memory, so here we limit the maximum memory usage.
+  private static final int MAX_POSITION_READ_LENGTH = 4 * Constants.MB;
+  private static final int USE_POSITION_READ_SIZE = (int) Math.min(MAX_POSITION_READ_LENGTH,
+      Configuration.getBytes(PropertyKey.PROXY_S3_USE_POSITION_READ_RANGE_SIZE));
   private final FileSystem mMetaFS;
   private final InstancedConfiguration mSConf;
 
@@ -272,6 +277,7 @@ public final class S3RestServiceHandler {
    * @param acl query string to indicate if this is for GetBucketAcl
    * @param policy query string to indicate if this is for GetBucketPolicy
    * @param policyStatus query string to indicate if this is for GetBucketPolicyStatus
+   * @param location query parameter to indicate if this is for GetBucketLocation
    * @param uploads query string to indicate if this is for ListMultipartUploads
    * @return the response object
    */
@@ -290,6 +296,7 @@ public final class S3RestServiceHandler {
                             @QueryParam("acl") final String acl,
                             @QueryParam("policy") final String policy,
                             @QueryParam("policyStatus") final String policyStatus,
+                            @QueryParam("location") final String location,
                             @QueryParam("uploads") final String uploads) {
     return S3RestUtils.call(bucket, () -> {
       Preconditions.checkNotNull(bucket, "required 'bucket' parameter is missing");
@@ -310,6 +317,12 @@ public final class S3RestServiceHandler {
             S3ErrorCode.INTERNAL_ERROR.getCode(),
             "GetBucketPolicyStatus is not currently supported.",
             S3ErrorCode.INTERNAL_ERROR.getStatus()));
+      }
+      if (location != null) {
+        throw new S3Exception(bucket, new S3ErrorCode(
+            S3ErrorCode.NOT_IMPLEMENTED.getCode(),
+            "GetBucketLocation is not currently supported.",
+            S3ErrorCode.NOT_IMPLEMENTED.getStatus()));
       }
 
       String path = S3RestUtils.parsePath(AlluxioURI.SEPARATOR + bucket);
@@ -663,6 +676,7 @@ public final class S3RestServiceHandler {
    * Uploads an object or part of an object in multipart upload.
    * @param contentMD5 the optional Base64 encoded 128-bit MD5 digest of the object
    * @param copySourceParam the URL-encoded source path to copy the new file from
+   * @param copySourceRange the http range header
    * @param decodedLength the length of the content when in aws-chunked encoding
    * @param contentLength the total length of the request body
    * @param contentTypeParam the content type of the request body
@@ -685,6 +699,8 @@ public final class S3RestServiceHandler {
   public Response createObjectOrUploadPart(@HeaderParam("Content-MD5") final String contentMD5,
                                            @HeaderParam(S3Constants.S3_COPY_SOURCE_HEADER)
                                                  final String copySourceParam,
+                                           @HeaderParam(S3Constants.S3_COPY_SOURCE_RANGE)
+                                             final String copySourceRange,
                                            @HeaderParam("x-amz-decoded-content-length")
                                                  final String decodedLength,
                                            @HeaderParam(S3Constants.S3_METADATA_DIRECTIVE_HEADER)
@@ -906,6 +922,7 @@ public final class S3RestServiceHandler {
         } else { // CopyObject or UploadPartCopy
           String copySource = !copySourceParam.startsWith(AlluxioURI.SEPARATOR)
               ? AlluxioURI.SEPARATOR + copySourceParam : copySourceParam;
+          S3RangeSpec s3Range = S3RangeSpec.Factory.create(copySourceRange);
           try {
             copySource = URLDecoder.decode(copySource, "UTF-8");
           } catch (UnsupportedEncodingException ex) {
@@ -967,11 +984,21 @@ public final class S3RestServiceHandler {
             throw new S3Exception("Copying an object to itself invalid.",
                 objectPath, S3ErrorCode.INVALID_REQUEST);
           }
+          // avoid the NPE of status
+          try {
+            if (status == null) {
+              status = userFs.getStatus(new AlluxioURI(copySource));
+            }
+          } catch (Exception e) {
+            throw S3RestUtils.toObjectS3Exception(e, objectPath, auditContext);
+          }
           try (FileInStream in = userFs.openFile(new AlluxioURI(copySource));
+               RangeFileInStream ris = RangeFileInStream.Factory.create(in, status.getLength(),
+                   s3Range);
                FileOutStream out = userFs.createFile(objectUri, copyFilePOptionsBuilder.build())) {
             MessageDigest md5 = MessageDigest.getInstance("MD5");
             try (DigestOutputStream digestOut = new DigestOutputStream(out, md5)) {
-              IOUtils.copyLarge(in, digestOut, new byte[8 * Constants.MB]);
+              IOUtils.copyLarge(ris, digestOut, new byte[8 * Constants.MB]);
               byte[] digest = md5.digest();
               String entityTag = Hex.encodeHexString(digest);
               // persist the ETag via xAttr
@@ -1137,6 +1164,8 @@ public final class S3RestServiceHandler {
           URIStatus status = userFs.getStatus(objectUri);
           if (status.isFolder() && !object.endsWith(AlluxioURI.SEPARATOR)) {
             throw new FileDoesNotExistException(status.getPath() + " is a directory");
+          } else if (!status.isFolder() && object.endsWith(AlluxioURI.SEPARATOR)) {
+            throw new FileDoesNotExistException(status.getPath() + " is a file");
           }
           Response.ResponseBuilder res = Response.ok()
               .lastModified(new Date(status.getLastModificationTimeMs()))
@@ -1267,17 +1296,33 @@ public final class S3RestServiceHandler {
           URIStatus status = userFs.getStatus(objectUri);
           FileInStream is = userFs.openFile(status, OpenFilePOptions.getDefaultInstance());
           S3RangeSpec s3Range = S3RangeSpec.Factory.create(range);
-          RangeFileInStream ris = RangeFileInStream.Factory.create(is, status.getLength(), s3Range);
-
-          InputStream inputStream;
+          InputStream inputStream = null;
+          long read = s3Range.getLength(status.getLength());
+          /**
+           * The client will request the worker to read data in chunk sizes,
+           * approximately 2MB. If the range is small, only a few KB in size,
+           * it will cause significant read amplification.
+           * Therefore, for smaller ranges,
+           * we attempt to use position read to avoid read amplification.
+           * For larger ranges, reading according to the chunk size does not cause
+           * particularly noticeable amplification, so we maintain the current approach.
+           */
+          if (read < USE_POSITION_READ_SIZE) {
+            byte[] bytes = new byte[(int) read];
+            is.positionedRead(s3Range.getOffset(status.getLength()), bytes, 0, bytes.length);
+            is.close();
+            inputStream = new ByteArrayInputStream(bytes);
+          }
+          if (inputStream == null) {
+            inputStream = RangeFileInStream.Factory.create(is, status.getLength(), s3Range);
+          }
           long rate =
               (long) mSConf.getInt(PropertyKey.PROXY_S3_SINGLE_CONNECTION_READ_RATE_LIMIT_MB)
                   * Constants.MB;
           RateLimiter currentRateLimiter = S3RestUtils.createRateLimiter(rate).orElse(null);
-          if (currentRateLimiter == null && mGlobalRateLimiter == null) {
-            inputStream = ris;
-          } else {
-            inputStream = new RateLimitInputStream(ris, mGlobalRateLimiter, currentRateLimiter);
+          if (currentRateLimiter != null || mGlobalRateLimiter != null) {
+            inputStream =
+                new RateLimitInputStream(inputStream, mGlobalRateLimiter, currentRateLimiter);
           }
 
           Response.ResponseBuilder res = Response.ok(inputStream)
@@ -1504,7 +1549,7 @@ public final class S3RestServiceHandler {
       @Nullable String bucket, @Nullable String object) {
     // Audit log may be enabled during runtime
     AsyncUserAccessAuditLogWriter auditLogWriter = null;
-    if (Configuration.getBoolean(PropertyKey.MASTER_AUDIT_LOGGING_ENABLED)) {
+    if (Configuration.getBoolean(PropertyKey.PROXY_AUDIT_LOGGING_ENABLED)) {
       auditLogWriter = mAsyncAuditLogWriter;
     }
     S3AuditContext auditContext = new S3AuditContext(auditLogWriter);

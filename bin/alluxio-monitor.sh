@@ -125,7 +125,7 @@ run_monitor() {
   else
     "${JAVA}" -cp ${CLASSPATH} ${alluxio_config} ${monitor_exec}
     if [[ $? -ne 0 ]]; then
-      echo -e "${WHITE}---${NC} ${RED}[ FAILED ]${NC} The ${CYAN}${node_type}${NC} @ ${PURPLE}$(hostname -f)${NC} is not serving requests.${NC}"
+      echo -e "${WHITE}---${NC} ${RED}[ FAILED ]${NC} The ${CYAN}${node_type}${NC} @ ${PURPLE}$(hostname -f)${NC} is not serving requests after 120s. Please check if the process is running and the logs/ if necessary.${NC}"
       print_node_logs "${node_type}"
       return 1
     fi
@@ -192,7 +192,8 @@ run_monitors() {
       # if there is an error, print the log tail for the remaining master nodes.
       batch_run_on_nodes "$(echo ${nodes})" "${BIN}/alluxio-monitor.sh" -L "${node_type}"
     else
-      HA_ENABLED=$(${BIN}/alluxio getConf ${ALLUXIO_MASTER_JAVA_OPTS} alluxio.zookeeper.enabled)
+      HA_ENABLED_GETCONF_RES=$(${BIN}/alluxio getConf ${ALLUXIO_MASTER_JAVA_OPTS} alluxio.zookeeper.enabled)
+      HA_ENABLED=$(check_true "$HA_ENABLED_GETCONF_RES")
       JOURNAL_TYPE=$(${BIN}/alluxio getConf ${ALLUXIO_MASTER_JAVA_OPTS} alluxio.master.journal.type | awk '{print toupper($0)}')
       if [[ ${JOURNAL_TYPE} == "EMBEDDED" ]]; then
         HA_ENABLED="true"
@@ -204,6 +205,16 @@ run_monitors() {
   else
     batch_run_on_nodes "$(echo ${nodes})" "${BIN}/alluxio-monitor.sh" "${mode}" "${node_type}"
   fi
+}
+
+check_true() {
+    local output=$1
+    if [[ $output == *"true"* ]]; then
+        result="true"
+    else
+        result="false"
+    fi
+    echo $result
 }
 
 # Used to run a command on multiple hosts concurrently.

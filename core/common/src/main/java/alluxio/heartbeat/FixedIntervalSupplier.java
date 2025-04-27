@@ -14,6 +14,8 @@ package alluxio.heartbeat;
 import org.slf4j.Logger;
 import org.slf4j.helpers.NOPLogger;
 
+import java.util.Objects;
+
 /**
  * Fixed interval supplier.
  */
@@ -43,11 +45,11 @@ public class FixedIntervalSupplier implements SleepIntervalSupplier {
   }
 
   @Override
-  public long getNextInterval(long mPreviousTickedMs, long nowTimeStampMillis) {
-    if (mPreviousTickedMs == -1) {
+  public long getNextInterval(long previousTickedMs, long nowTimeStampMillis) {
+    if (previousTickedMs == -1) {
       return -1;
     }
-    long executionTimeMs = nowTimeStampMillis - mPreviousTickedMs;
+    long executionTimeMs = nowTimeStampMillis - previousTickedMs;
     if (executionTimeMs > mInterval) {
       mLogger.warn("{} last execution took {} ms. Longer than the interval {}",
           Thread.currentThread().getName(), executionTimeMs, mInterval);
@@ -57,7 +59,24 @@ public class FixedIntervalSupplier implements SleepIntervalSupplier {
   }
 
   @Override
-  public long getRunLimit(long mPreviousTickedMs) {
+  public long getRunLimit(long previousTickedMs) {
     return mInterval;
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    FixedIntervalSupplier that = (FixedIntervalSupplier) o;
+    return mInterval == that.mInterval;
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(mInterval);
   }
 }

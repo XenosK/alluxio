@@ -12,6 +12,7 @@
 package alluxio.client.file.cache.store;
 
 import alluxio.client.file.cache.CacheManagerOptions;
+import alluxio.client.file.cache.CacheStatus;
 import alluxio.client.file.cache.PageInfo;
 import alluxio.client.file.cache.PageStore;
 import alluxio.client.file.cache.evictor.CacheEvictor;
@@ -33,8 +34,8 @@ import java.util.stream.Stream;
 /**
  * Directory of page store.
  */
-public interface PageStoreDir {
-  Logger LOG = LoggerFactory.getLogger(RocksPageStore.class);
+public interface PageStoreDir extends CacheStatus {
+  Logger LOG = LoggerFactory.getLogger(PageStoreDir.class);
 
   /**
    * Create a list of PageStoreDir based on the configuration.
@@ -62,12 +63,6 @@ public interface PageStoreDir {
     switch (pageStoreOptions.getType()) {
       case LOCAL:
         return new LocalPageStoreDir(
-            pageStoreOptions,
-            PageStore.create(pageStoreOptions),
-            CacheEvictor.create(cacheEvictorOptions)
-        );
-      case ROCKS:
-        return new RocksPageStoreDir(
             pageStoreOptions,
             PageStore.create(pageStoreOptions),
             CacheEvictor.create(cacheEvictorOptions)
@@ -167,6 +162,11 @@ public interface PageStoreDir {
    * @return if the bytes requested could be reserved
    */
   boolean reserve(long bytes);
+
+  /**
+   * @param bytes
+   */
+  void deleteTempPage(PageInfo bytes);
 
   /**
    * @param bytes

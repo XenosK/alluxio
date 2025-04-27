@@ -44,7 +44,6 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.Collections;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -72,13 +71,12 @@ public final class ProxyWebServer extends WebServer {
   private final RateLimiter mGlobalRateLimiter;
   private final FileSystem mFileSystem;
   private AsyncUserAccessAuditLogWriter mAsyncAuditLogWriter;
-  public static final String PROXY_S3_HANDLER_MAP = "Proxy S3 Handler Map";
-  public ConcurrentHashMap<Request, S3Handler> mS3HandlerMap = new ConcurrentHashMap<>();
+  public static final String S3_HANDLER_ATTRIBUTE = "Proxy S3 Handler Attribute";
 
   class ProxyListener implements HttpChannel.Listener {
     public void onComplete(Request request)
     {
-      S3Handler s3Hdlr = mS3HandlerMap.get(request);
+      S3Handler s3Hdlr = (S3Handler) request.getAttribute(S3_HANDLER_ATTRIBUTE);
       if (s3Hdlr != null) {
         ProxyWebServer.logAccess(s3Hdlr.getServletRequest(), s3Hdlr.getServletResponse(),
             s3Hdlr.getStopwatch(), s3Hdlr.getS3Task() != null
@@ -112,14 +110,18 @@ public final class ProxyWebServer extends WebServer {
         (long) Configuration.getInt(PropertyKey.PROXY_S3_GLOBAL_READ_RATE_LIMIT_MB) * Constants.MB;
     mGlobalRateLimiter = S3RestUtils.createRateLimiter(rate).orElse(null);
 
-    if (Configuration.getBoolean(PropertyKey.PROXY_AUDIT_LOGGING_ENABLED)) {
-      mAsyncAuditLogWriter = new AsyncUserAccessAuditLogWriter("PROXY_AUDIT_LOG");
-      mAsyncAuditLogWriter.start();
-      MetricsSystem.registerGaugeIfAbsent(
-          MetricKey.PROXY_AUDIT_LOG_ENTRIES_SIZE.getName(),
-              () -> mAsyncAuditLogWriter != null
-                  ? mAsyncAuditLogWriter.getAuditLogEntriesSize() : -1);
-    }
+    /**
+     * The audit logger will be running all the time, and an operation checks whether
+     * to enable audit logs in {@link alluxio.proxy.s3.S3RestServiceHandler#createAuditContext} and
+     * {@link alluxio.proxy.s3.S3Handler#createAuditContext}. So audit log can be turned on/off
+     * at runtime by updating the property key.
+     */
+    mAsyncAuditLogWriter = new AsyncUserAccessAuditLogWriter("PROXY_AUDIT_LOG");
+    mAsyncAuditLogWriter.start();
+    MetricsSystem.registerGaugeIfAbsent(
+        MetricKey.PROXY_AUDIT_LOG_ENTRIES_SIZE.getName(),
+        () -> mAsyncAuditLogWriter != null
+            ? mAsyncAuditLogWriter.getAuditLogEntriesSize() : -1);
 
     ServletContainer servlet = new ServletContainer(config) {
       private static final long serialVersionUID = 7756010860672831556L;
@@ -168,7 +170,10 @@ public final class ProxyWebServer extends WebServer {
                   mAsyncAuditLogWriter);
               getServletContext().setAttribute(PROXY_S3_V2_LIGHT_POOL, createLightThreadPool());
               getServletContext().setAttribute(PROXY_S3_V2_HEAVY_POOL, createHeavyThreadPool());
-              getServletContext().setAttribute(PROXY_S3_HANDLER_MAP, mS3HandlerMap);
+              if (mGlobalRateLimiter != null) {
+                getServletContext().setAttribute(GLOBAL_RATE_LIMITER_SERVLET_RESOURCE_KEY,
+                    mGlobalRateLimiter);
+              }
             }
           });
       mServletContextHandler

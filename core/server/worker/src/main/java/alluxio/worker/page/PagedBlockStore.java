@@ -300,7 +300,7 @@ public class PagedBlockStore implements BlockStore {
     }
     final Optional<PagedUfsBlockReader> ufsBlockReader =
         readOptions.map(opt -> new PagedUfsBlockReader(
-            mUfsManager, mUfsInStreamCache, blockMeta, offset, opt, mPageSize));
+                mUfsManager, mUfsInStreamCache, blockMeta, offset, opt, mPageSize));
     return new PagedBlockReader(mCacheManager, blockMeta, offset, ufsBlockReader, mPageSize);
   }
 
@@ -389,15 +389,7 @@ public class PagedBlockStore implements BlockStore {
   public void moveBlock(long sessionId, long blockId, AllocateOptions moveOptions)
       throws IOException {
     // TODO(bowen): implement actual move and replace placeholder values
-    int dirIndex = getDirIndexOfBlock(blockId);
-    BlockStoreLocation srcLocation = new BlockStoreLocation(DEFAULT_TIER, dirIndex);
-    BlockStoreLocation destLocation = moveOptions.getLocation();
-    for (BlockStoreEventListener listener : mBlockStoreEventListeners) {
-      synchronized (listener) {
-        listener.onMoveBlockByClient(blockId, srcLocation, destLocation);
-      }
-    }
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("moveBlock");
   }
 
   @Override

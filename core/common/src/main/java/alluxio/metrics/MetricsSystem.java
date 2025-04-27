@@ -38,6 +38,7 @@ import com.codahale.metrics.jvm.MemoryUsageGaugeSet;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
+import io.netty.util.internal.PlatformDependent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -73,6 +74,8 @@ public final class MetricsSystem {
   private static final ConcurrentHashMap<String, String> CACHED_METRICS = new ConcurrentHashMap<>();
   private static int sResolveTimeout =
       (int) Configuration.getMs(PropertyKey.NETWORK_HOST_RESOLUTION_TIMEOUT_MS);
+  private static boolean sUniqueIDEnabled =
+      Configuration.getBoolean(PropertyKey.METRICS_KEY_INCLUDING_UNIQUE_ID_ENABLED);
   // A map from AlluxioURI to corresponding cached escaped path.
   private static final ConcurrentHashMap<AlluxioURI, String> CACHED_ESCAPED_PATH
       = new ConcurrentHashMap<>();
@@ -163,6 +166,9 @@ public final class MetricsSystem {
     MetricsSystem.registerGaugeIfAbsent(
         MetricsSystem.getMetricName(MetricKey.PROCESS_POOL_DIRECT_MEM_USED.getName()),
         MetricsSystem::getDirectMemUsed);
+    MetricsSystem.registerGaugeIfAbsent(
+        MetricsSystem.getMetricName(MetricKey.PROCESS_NETTY_DIRECT_MEM_USED.getName()),
+        MetricsSystem::getDirectMemUsedForNetty);
   }
 
   private static BufferPoolMXBean getDirectBufferPool() {
@@ -184,6 +190,13 @@ public final class MetricsSystem {
       return DIRECT_BUFFER_POOL.getMemoryUsed();
     }
     return 0;
+  }
+
+  /**
+   * @return the used direct memory of netty
+   */
+  public static long getDirectMemUsedForNetty() {
+    return PlatformDependent.usedDirectMemory();
   }
 
   @GuardedBy("MetricsSystem")
@@ -471,10 +484,18 @@ public final class MetricsSystem {
    * @return the metric registry name
    */
   private static String getMetricNameWithUniqueId(InstanceType instance, String name) {
-    if (name.startsWith(instance.toString())) {
-      return Joiner.on(".").join(name, sSourceNameSupplier.get());
+    String metricsNameWithInstanceType = addInstanceTypeToMetricsName(instance, name);
+    if (sUniqueIDEnabled) {
+      return Joiner.on(".").join(metricsNameWithInstanceType, sSourceNameSupplier.get());
     }
-    return Joiner.on(".").join(instance, name, sSourceNameSupplier.get());
+    return metricsNameWithInstanceType;
+  }
+
+  private static String addInstanceTypeToMetricsName(InstanceType instance, String name) {
+    if (name.startsWith(instance.toString())) {
+      return name;
+    }
+    return Joiner.on(".").join(instance, name);
   }
 
   /**

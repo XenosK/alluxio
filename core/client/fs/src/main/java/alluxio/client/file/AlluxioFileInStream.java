@@ -48,6 +48,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import javax.annotation.concurrent.NotThreadSafe;
@@ -81,6 +82,7 @@ public class AlluxioFileInStream extends FileInStream {
   private final BlockStoreClient mBlockStore;
   private final FileSystemContext mContext;
   private final boolean mPassiveCachingEnabled;
+  private final long mStatusOutdatedTime;
 
   /* Convenience values derived from mStatus, use these instead of querying mStatus. */
   /** Length of the file in bytes. */
@@ -129,6 +131,8 @@ public class AlluxioFileInStream extends FileInStream {
               .withMaxSleep(blockReadRetrySleepMax)
               .withSkipInitialSleep().build();
       mStatus = status;
+      mStatusOutdatedTime = System.currentTimeMillis()
+          + conf.getMs(PropertyKey.USER_FILE_IN_STREAM_STATUS_EXPIRATION_TIME);
       mOptions = options;
       mBlockStore = BlockStoreClient.create(mContext);
       mLength = mStatus.getLength();
@@ -301,11 +305,15 @@ public class AlluxioFileInStream extends FileInStream {
       try {
         // Positioned read may be called multiple times for the same block. Caching the in-stream
         // allows us to avoid the block store rpc to open a new stream for each call.
+        BlockInfo blockInfo = isStatusOutdated() || lastException != null
+            ? mBlockStore.getInfo(blockId) : mStatus.getBlockInfo(blockId);
         if (mCachedPositionedReadStream == null) {
-          mCachedPositionedReadStream = mBlockStore.getInStream(blockId, mOptions, mFailedWorkers);
+          mCachedPositionedReadStream = mBlockStore.getInStream(
+              blockInfo, mOptions, mFailedWorkers);
         } else if (mCachedPositionedReadStream.getId() != blockId) {
           closeBlockInStream(mCachedPositionedReadStream);
-          mCachedPositionedReadStream = mBlockStore.getInStream(blockId, mOptions, mFailedWorkers);
+          mCachedPositionedReadStream = mBlockStore.getInStream(
+              blockInfo, mOptions, mFailedWorkers);
         }
         long offset = pos % mBlockSize;
         int bytesRead = mCachedPositionedReadStream.positionedRead(offset, b, off,
@@ -389,6 +397,7 @@ public class AlluxioFileInStream extends FileInStream {
       throw new IOException("No BlockInfo for block(id=" + blockId + ") of file"
           + "(id=" + mStatus.getFileId() + ", path=" + mStatus.getPath() + ")");
     }
+
     // Create stream
     boolean isBlockInfoOutdated = true;
     // blockInfo is "outdated" when all the locations in that blockInfo are failed workers,
@@ -396,14 +405,15 @@ public class AlluxioFileInStream extends FileInStream {
     if (mFailedWorkers.isEmpty() || mFailedWorkers.size() < blockInfo.getLocations().size()) {
       isBlockInfoOutdated = false;
     } else {
-      for (BlockLocation location : blockInfo.getLocations()) {
+      List<BlockLocation> locs = blockInfo.getLocations();
+      for (BlockLocation location : locs) {
         if (!mFailedWorkers.containsKey(location.getWorkerAddress())) {
           isBlockInfoOutdated = false;
           break;
         }
       }
     }
-    if (isBlockInfoOutdated) {
+    if (isBlockInfoOutdated || isStatusOutdated()) {
       mBlockInStream = mBlockStore.getInStream(blockId, mOptions, mFailedWorkers);
     } else {
       mBlockInStream = mBlockStore.getInStream(blockInfo, mOptions, mFailedWorkers);
@@ -411,6 +421,14 @@ public class AlluxioFileInStream extends FileInStream {
     // Set the stream to the correct position.
     long offset = mPosition % mBlockSize;
     mBlockInStream.seek(offset);
+  }
+
+  /**
+   * @return true if the status is outdated
+   */
+  @VisibleForTesting
+  public boolean isStatusOutdated() {
+    return System.currentTimeMillis() >= mStatusOutdatedTime;
   }
 
   private void closeBlockInStream(BlockInStream stream) throws IOException {
